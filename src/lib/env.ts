@@ -15,10 +15,19 @@ function required(name: string, value: string | undefined): string {
   return value
 }
 
+function cleanUrl(raw?: string): string {
+  if (!raw) return ''
+  let url = raw.trim()
+  url = url.replace(/\/auth\/v1\/?$/, '')
+  url = url.replace(/\/rest\/v1\/?$/, '')
+  url = url.replace(/\/+$/, '')
+  return url
+}
+
 export const publicEnv = {
-  supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL ?? '',
-  supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '',
-  siteUrl: process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000',
+  supabaseUrl: cleanUrl(process.env.NEXT_PUBLIC_SUPABASE_URL),
+  supabaseAnonKey: (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '').trim(),
+  siteUrl: cleanUrl(process.env.NEXT_PUBLIC_SITE_URL) || 'http://localhost:3000',
 } as const
 
 /**

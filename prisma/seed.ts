@@ -896,21 +896,70 @@ async function main() {
   // ───────────────────────────────────────────────────────────────────────────
   console.log('🛡️ Checking SEED_ADMIN_EMAIL...')
   const adminEmail = process.env.SEED_ADMIN_EMAIL?.trim()
+  const adminPassword = process.env.SEED_ADMIN_PASSWORD?.trim() || 'Admin12345!'
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim().replace(/\/+$/, '')
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()
+
   if (adminEmail) {
+    if (supabaseUrl && serviceRoleKey && serviceRoleKey.length > 20) {
+      try {
+        const { createClient } = await import('@supabase/supabase-js')
+        const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
+          auth: { autoRefreshToken: false, persistSession: false },
+        })
+
+        const { data: usersData } = await supabaseAdmin.auth.admin.listUsers()
+        const existingAuthUser = usersData?.users?.find(
+          (u) => u.email?.toLowerCase() === adminEmail.toLowerCase(),
+        )
+
+        let authUserId = existingAuthUser?.id
+
+        if (!existingAuthUser) {
+          const { data: createdUser, error: createError } =
+            await supabaseAdmin.auth.admin.createUser({
+              email: adminEmail,
+              password: adminPassword,
+              email_confirm: true,
+              user_metadata: { display_name: 'Administrator' },
+            })
+
+          if (createError) {
+            console.warn(`⚠️ Could not auto-create Supabase auth user: ${createError.message}`)
+          } else if (createdUser.user) {
+            authUserId = createdUser.user.id
+            console.log(`✅ Created Supabase Auth user for "${adminEmail}" (password: "${adminPassword}").`)
+          }
+        }
+
+        if (authUserId) {
+          await prisma.userProfile.upsert({
+            where: { id: authUserId },
+            update: { role: UserRole.ADMIN, email: adminEmail },
+            create: {
+              id: authUserId,
+              email: adminEmail,
+              displayName: 'Administrator',
+              role: UserRole.ADMIN,
+            },
+          })
+          console.log(`✅ Ensured user profile for "${adminEmail}" is ADMIN.`)
+        }
+      } catch (err) {
+        console.warn('⚠️ Supabase admin client bootstrap error:', err)
+      }
+    }
+
     const userProfile = await prisma.userProfile.findUnique({
       where: { email: adminEmail },
     })
 
-    if (userProfile) {
+    if (userProfile && userProfile.role !== UserRole.ADMIN) {
       await prisma.userProfile.update({
         where: { id: userProfile.id },
         data: { role: UserRole.ADMIN },
       })
       console.log(`✅ Promoted existing account "${adminEmail}" to ADMIN.`)
-    } else {
-      console.log(
-        `ℹ️ Account for "${adminEmail}" does not exist yet. Sign up first through the app and re-run seed to become admin (§19).`,
-      )
     }
   } else {
     console.log('ℹ️ No SEED_ADMIN_EMAIL configured. Set it in .env to bootstrap your first admin account.')
