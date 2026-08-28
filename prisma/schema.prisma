@@ -1,0 +1,967 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// JKT48 Archive Lab — Prisma schema
+//
+// CODE FIRST (PRD §24): this file is the single source of truth for the
+// database. Tables are never created by hand in the Supabase dashboard.
+//
+// ARCHITECTURAL NORTH STAR (PRD §28): the Knowledge Graph is the core domain.
+// Encyclopedia, Game Engine, Time Machine and Mastery are all *consumers* of
+// Entity + Relationship. Adding a fact must not require touching features.
+//
+//   Entity ──(Relationship: type + temporal validity + provenance)──> Entity
+//
+// RELATIONSHIP-FIRST (PRD §10): there is deliberately no member.team_id /
+// member.generation_id / member.center_song_id. Those are relationships.
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+// Prisma 7: connection URLs live in prisma.config.ts (for Migrate) and are
+// passed to PrismaClient via a driver adapter at runtime. See src/lib/prisma.
+datasource db {
+  provider = "postgresql"
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 1. ENTITY TAXONOMY  (PRD §9.1)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Coarse grouping used for navigation and game scoping.
+enum EntityCategory {
+  PERSON
+  GROUP
+  MUSIC
+  EVENT
+  MEDIA
+  ORGANIZATION
+
+  @@map("entity_category")
+}
+
+/// Concrete entity type. New types can be added without feature churn,
+/// because features read the graph rather than type-specific columns.
+enum EntityType {
+  // PERSON
+  MEMBER
+  STAFF
+  // GROUP
+  GROUP
+  TEAM
+  GENERATION
+  SUBUNIT
+  // MUSIC
+  SONG
+  SINGLE
+  ALBUM
+  SETLIST
+  UNIT
+  // EVENT
+  CONCERT
+  THEATER_PERFORMANCE
+  ELECTION
+  AUDITION
+  GRADUATION
+  FORMATION
+  MAJOR_EVENT
+  // MEDIA
+  TV_APPEARANCE
+  RADIO
+  MOVIE
+  DRAMA
+  PHOTOBOOK
+  // ORGANIZATION
+  ORGANIZATION
+
+  @@map("entity_type")
+}
+
+/// Generic entity record (PRD §12). Every node in the knowledge graph is one
+/// of these; type-specific attributes live in the specialized 1:1 tables.
+model Entity {
+  id            String         @id @default(cuid())
+  entityType    EntityType     @map("entity_type")
+  category      EntityCategory
+  canonicalName String         @map("canonical_name")
+  /// Alternate spellings, nicknames, romanisations. Powers search and
+  /// free-text answer evaluation in games.
+  aliases       String[]       @default([])
+  slug          String         @unique
+  /// One-line editorial line used in list views.
+  summary       String?
+  /// Long-form historical context shown on the entity detail page.
+  description   String?
+  imageUrl      String?        @map("image_url")
+  /// Type-specific extras that do not yet deserve a column.
+  metadata      Json?
+
+  /// The entity's own lifespan — a member's active window, a team's
+  /// existence. Relationships carry their own validity separately.
+  activeFrom DateTime? @map("active_from") @db.Date
+  activeTo   DateTime? @map("active_to") @db.Date
+
+  /// How well-known this entity is (0–100). The game engine uses it to pick
+  /// approachable subjects for EASY and obscure ones for NIGHTMARE.
+  prominence  Int     @default(50)
+  isPublished Boolean @default(true) @map("is_published")
+
+  /// Primary provenance for the entity record itself (PRD §13).
+  provenanceId String? @map("source_id")
+  provenance   Source? @relation(fields: [provenanceId], references: [id], onDelete: SetNull)
+  notes        String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Specialized attribute tables (0..1 each)
+  member       Member?
+  generation   Generation?
+  team         Team?
+  song         Song?
+  album        Album?
+  event        Event?
+  concert      Concert?
+  setlist      Setlist?
+  mediaItem    MediaItem?
+  organization Organization?
+
+  // Graph edges
+  outgoingRelationships Relationship[] @relation("RelationshipSource")
+  incomingRelationships Relationship[] @relation("RelationshipTarget")
+
+  // Consumers
+  masteryRecords   MasteryRecord[]
+  gameSessions     GameSession[]
+  gameChallenges   GameChallenge[]
+  dataHealthIssues DataHealthIssue[]
+
+  @@index([entityType])
+  @@index([category])
+  @@index([canonicalName])
+  @@index([prominence])
+  @@map("entities")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 2. RELATIONSHIPS — first-class domain objects (PRD §10, §11)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Relationship vocabulary. Admin-configurable, so a new edge kind does not
+/// require a migration (PRD §16).
+model RelationshipType {
+  id          String  @id @default(cuid())
+  /// Stable machine code, e.g. MEMBER_OF, CENTER_OF, SENBATSU_IN.
+  code        String  @unique
+  name        String
+  /// Label used when traversing the edge backwards ("has member").
+  inverseName String? @map("inverse_name")
+  description String?
+
+  /// A → B differs from B → A.
+  isDirectional Boolean @default(true) @map("is_directional")
+  /// Edge carries validFrom / validTo and participates in Time Machine.
+  isTemporal    Boolean @default(false) @map("is_temporal")
+
+  /// Optional guardrails for the relationship builder. Empty = anything goes.
+  allowedSourceTypes EntityType[] @default([]) @map("allowed_source_types")
+  allowedTargetTypes EntityType[] @default([]) @map("allowed_target_types")
+
+  /// Whether the game engine may turn this edge into a clue or a question.
+  isQuizzable  Boolean @default(true) @map("is_quizzable")
+  displayOrder Int     @default(100) @map("display_order")
+  isActive     Boolean @default(true) @map("is_active")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  relationships   Relationship[]
+  gameDefinitions GameDefinitionRelationshipType[]
+
+  @@index([isActive, displayOrder])
+  @@map("relationship_types")
+}
+
+/// A single edge in the knowledge graph, valid over a time window.
+///
+/// Time Machine resolves historical state with:
+///   valid_from <= :date AND (valid_to IS NULL OR valid_to >= :date)
+model Relationship {
+  id String @id @default(cuid())
+
+  sourceEntityId     String @map("source_entity_id")
+  relationshipTypeId String @map("relationship_type_id")
+  targetEntityId     String @map("target_entity_id")
+
+  source           Entity           @relation("RelationshipSource", fields: [sourceEntityId], references: [id], onDelete: Cascade)
+  target           Entity           @relation("RelationshipTarget", fields: [targetEntityId], references: [id], onDelete: Cascade)
+  relationshipType RelationshipType @relation(fields: [relationshipTypeId], references: [id], onDelete: Restrict)
+
+  /// Temporal validity (PRD §11). A null validTo means "still true today".
+  validFrom DateTime? @map("valid_from") @db.Date
+  validTo   DateTime? @map("valid_to") @db.Date
+
+  /// Clue-selection weight for the game engine: higher = more central fact.
+  weight Int @default(1)
+
+  /// Provenance (PRD §13).
+  provenanceId String? @map("source_id")
+  provenance   Source? @relation(fields: [provenanceId], references: [id], onDelete: SetNull)
+  notes        String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  dataHealthIssues DataHealthIssue[]
+
+  @@unique([sourceEntityId, relationshipTypeId, targetEntityId, validFrom], name: "relationship_identity")
+  @@index([sourceEntityId, relationshipTypeId])
+  @@index([targetEntityId, relationshipTypeId])
+  @@index([relationshipTypeId])
+  @@index([validFrom, validTo])
+  @@map("relationships")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 3. PROVENANCE  (PRD §13)
+// ═══════════════════════════════════════════════════════════════════════════
+
+enum SourceType {
+  FANDOM
+  WIKIPEDIA
+  OFFICIAL_SITE
+  OFFICIAL_SOCIAL
+  NEWS_ARTICLE
+  INTERVIEW
+  VIDEO
+  BOOK
+  FAN_ARCHIVE
+  PERSONAL_KNOWLEDGE
+  OTHER
+
+  @@map("source_type")
+}
+
+model Source {
+  id          String     @id @default(cuid())
+  name        String
+  url         String?
+  sourceType  SourceType @default(OTHER) @map("source_type")
+  retrievedAt DateTime?  @map("retrieved_at")
+  notes       String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  entities      Entity[]
+  relationships Relationship[]
+
+  @@index([sourceType])
+  @@map("sources")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 4. SPECIALIZED ENTITY TABLES  (PRD §12)
+//    Attributes intrinsic to the record — never relationships.
+// ═══════════════════════════════════════════════════════════════════════════
+
+enum MemberStatus {
+  TRAINEE
+  ACTIVE
+  GRADUATED
+  ON_HIATUS
+  TRANSFERRED
+
+  @@map("member_status")
+}
+
+model Member {
+  entityId String @id @map("entity_id")
+  entity   Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  stageName      String       @map("stage_name")
+  fullName       String?      @map("full_name")
+  nickname       String?
+  status         MemberStatus @default(ACTIVE)
+  birthDate      DateTime?    @map("birth_date") @db.Date
+  birthPlace     String?      @map("birth_place")
+  heightCm       Int?         @map("height_cm")
+  bloodType      String?      @map("blood_type")
+  zodiac         String?
+  /// Self-introduction catchphrase — an excellent recall target.
+  jikoshoukai    String?
+  debutDate      DateTime?    @map("debut_date") @db.Date
+  graduationDate DateTime?    @map("graduation_date") @db.Date
+
+  @@index([status])
+  @@map("members")
+}
+
+model Generation {
+  entityId String @id @map("entity_id")
+  entity   Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  /// 1, 2, 3, … kept as an integer for ordering and "which gen came after".
+  number             Int       @unique
+  auditionOpenedAt   DateTime? @map("audition_opened_at") @db.Date
+  announcedAt        DateTime? @map("announced_at") @db.Date
+  debutedAt          DateTime? @map("debuted_at") @db.Date
+  initialMemberCount Int?      @map("initial_member_count")
+
+  @@map("generations")
+}
+
+model Team {
+  entityId String @id @map("entity_id")
+  entity   Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  /// J, KIII, T, TII, Academy …
+  code        String    @unique
+  formedAt    DateTime? @map("formed_at") @db.Date
+  disbandedAt DateTime? @map("disbanded_at") @db.Date
+  /// Team identity colour, rendered as a hairline accent in the UI.
+  colorHex    String?   @map("color_hex")
+  catchphrase String?
+
+  @@map("teams")
+}
+
+enum SongType {
+  SINGLE_A_SIDE
+  SINGLE_B_SIDE
+  ALBUM_TRACK
+  SETLIST_SONG
+  UNIT_SONG
+  SOLO
+  OTHER
+
+  @@map("song_type")
+}
+
+model Song {
+  entityId String @id @map("entity_id")
+  entity   Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  title          String
+  /// JKT48 songs are usually Indonesian adaptations of AKB48 originals.
+  originalTitle  String?   @map("original_title")
+  songType       SongType  @default(OTHER) @map("song_type")
+  releasedAt     DateTime? @map("released_at") @db.Date
+  durationSec    Int?      @map("duration_sec")
+  isAdaptation   Boolean   @default(false) @map("is_adaptation")
+  originalArtist String?   @map("original_artist")
+  lyricist       String?
+  composer       String?
+
+  @@index([songType])
+  @@map("songs")
+}
+
+enum AlbumType {
+  SINGLE
+  STUDIO_ALBUM
+  MINI_ALBUM
+  COMPILATION
+  BEST_OF
+  OTHER
+
+  @@map("album_type")
+}
+
+model Album {
+  entityId String @id @map("entity_id")
+  entity   Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  title         String
+  albumType     AlbumType @default(OTHER) @map("album_type")
+  releasedAt    DateTime? @map("released_at") @db.Date
+  catalogNumber String?   @map("catalog_number")
+  trackCount    Int?      @map("track_count")
+  label         String?
+
+  @@map("albums")
+}
+
+enum EventType {
+  ELECTION
+  AUDITION
+  GRADUATION
+  FORMATION
+  TEAM_SHUFFLE
+  ANNIVERSARY
+  HANDSHAKE
+  FESTIVAL
+  OTHER
+
+  @@map("event_type")
+}
+
+model Event {
+  entityId String @id @map("entity_id")
+  entity   Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  title     String
+  eventType EventType @default(OTHER) @map("event_type")
+  startDate DateTime? @map("start_date") @db.Date
+  endDate   DateTime? @map("end_date") @db.Date
+  venue     String?
+  city      String?
+  country   String?   @default("Indonesia")
+
+  @@index([eventType])
+  @@index([startDate])
+  @@map("events")
+}
+
+model Concert {
+  entityId String @id @map("entity_id")
+  entity   Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  title      String
+  tourName   String?   @map("tour_name")
+  heldAt     DateTime? @map("held_at") @db.Date
+  venue      String?
+  city       String?
+  attendance Int?
+  isStreamed Boolean   @default(false) @map("is_streamed")
+
+  @@index([heldAt])
+  @@map("concerts")
+}
+
+model Setlist {
+  entityId String @id @map("entity_id")
+  entity   Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  /// "Pajama Drive", "Renai Kinshi Jourei", …
+  stageName   String    @map("stage_name")
+  revision    String?
+  premieredAt DateTime? @map("premiered_at") @db.Date
+  songCount   Int?      @map("song_count")
+  theater     String?
+
+  @@map("setlists")
+}
+
+enum MediaType {
+  TV_SHOW
+  RADIO_SHOW
+  MOVIE
+  DRAMA
+  PHOTOBOOK
+  MUSIC_VIDEO
+  DOCUMENTARY
+  OTHER
+
+  @@map("media_type")
+}
+
+model MediaItem {
+  entityId String @id @map("entity_id")
+  entity   Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  title       String
+  mediaType   MediaType @default(OTHER) @map("media_type")
+  releasedAt  DateTime? @map("released_at") @db.Date
+  network     String?
+  publisher   String?
+  externalUrl String?   @map("external_url")
+
+  @@index([mediaType])
+  @@map("media_items")
+}
+
+enum OrganizationType {
+  IDOL_GROUP
+  SISTER_GROUP
+  MANAGEMENT
+  LABEL
+  PRODUCTION
+  OTHER
+
+  @@map("organization_type")
+}
+
+model Organization {
+  entityId String @id @map("entity_id")
+  entity   Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  name      String
+  orgType   OrganizationType @default(OTHER) @map("org_type")
+  country   String?
+  foundedAt DateTime?        @map("founded_at") @db.Date
+  website   String?
+
+  @@map("organizations")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 5. ERAS — named windows for the Time Machine  (PRD §5.5)
+// ═══════════════════════════════════════════════════════════════════════════
+
+model Era {
+  id           String    @id @default(cuid())
+  name         String
+  slug         String    @unique
+  startDate    DateTime  @map("start_date") @db.Date
+  endDate      DateTime? @map("end_date") @db.Date
+  description  String?
+  displayOrder Int       @default(0) @map("display_order")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([startDate])
+  @@map("eras")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 6. IDENTITY  (PRD §19, §27)
+//    Supabase Auth owns auth.users. This is the application profile, whose
+//    id IS the Supabase auth uid. Authorization is decided by `role` —
+//    never by a hard-coded username.
+// ═══════════════════════════════════════════════════════════════════════════
+
+enum UserRole {
+  USER
+  ADMIN
+
+  @@map("user_role")
+}
+
+model UserProfile {
+  /// Supabase auth.users.id (uuid).
+  id          String    @id @db.Uuid
+  email       String    @unique
+  displayName String?   @map("display_name")
+  avatarUrl   String?   @map("avatar_url")
+  role        UserRole  @default(USER)
+  lastSeenAt  DateTime? @map("last_seen_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  masteryRecords MasteryRecord[]
+  gameSessions   GameSession[]
+  auditLogs      AuditLog[]
+
+  @@index([role])
+  @@map("user_profiles")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 7. MASTERY  (PRD §8)
+//    V1 scope = per Generation, but `scope` leaves member/song/team mastery
+//    available later without a migration.
+// ═══════════════════════════════════════════════════════════════════════════
+
+enum MasteryScope {
+  GENERATION
+  MEMBER
+  TEAM
+  SONG
+  ALBUM
+  EVENT
+  HISTORY
+  GLOBAL
+
+  @@map("mastery_scope")
+}
+
+enum MasteryDimension {
+  OVERALL
+  MEMBERS
+  HISTORY
+  TEAMS
+  SONGS
+  RELATIONSHIPS
+
+  @@map("mastery_dimension")
+}
+
+/// Admin-configurable status bands (PRD §8.3). Status names must never be
+/// hard-coded in application code — always resolve a score through this table.
+model MasteryStatus {
+  id           String  @id @default(cuid())
+  name         String
+  slug         String  @unique
+  minScore     Int     @map("min_score")
+  maxScore     Int     @map("max_score")
+  colorHex     String? @map("color_hex")
+  description  String?
+  displayOrder Int     @default(0) @map("display_order")
+  isActive     Boolean @default(true) @map("is_active")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([displayOrder])
+  @@map("mastery_statuses")
+}
+
+/// Weights used to roll dimension scores up into OVERALL. Configurable, so
+/// the mastery formula is data rather than code.
+model MasteryDimensionWeight {
+  id        String           @id @default(cuid())
+  scope     MasteryScope
+  dimension MasteryDimension
+  weight    Int              @default(1)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([scope, dimension])
+  @@map("mastery_dimension_weights")
+}
+
+model MasteryRecord {
+  id     String      @id @default(cuid())
+  userId String      @map("user_id") @db.Uuid
+  user   UserProfile @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  scope     MasteryScope
+  dimension MasteryDimension @default(OVERALL)
+
+  /// Null for GLOBAL scope; otherwise the generation/member/song being scored.
+  targetEntityId String? @map("target_entity_id")
+  targetEntity   Entity? @relation(fields: [targetEntityId], references: [id], onDelete: Cascade)
+
+  /// `targetEntityId`, or the literal "GLOBAL" when there is no target.
+  ///
+  /// Postgres treats NULLs as distinct inside a unique index, so a nullable
+  /// column cannot identify a row: an upsert keyed on a null target would insert
+  /// a second record every time a player answered a GLOBAL-scope question. This
+  /// mirror column is what makes one (user, scope, dimension, target) tuple
+  /// resolve to exactly one row.
+  targetKey String @map("target_key")
+
+  /// 0–100. Resolve to a label via MasteryStatus.
+  score          Float @default(0)
+  attempts       Int   @default(0)
+  correctCount   Int   @default(0) @map("correct_count")
+  incorrectCount Int   @default(0) @map("incorrect_count")
+
+  lastPracticedAt DateTime? @map("last_practiced_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([userId, scope, dimension, targetKey], name: "mastery_identity")
+  @@index([userId, scope])
+  @@map("mastery_records")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 8. GAME ENGINE  (PRD §6)
+//    Games are DATA-DRIVEN. A GameDefinition declares what the generator
+//    should ask for; the generator reads the knowledge graph.
+// ═══════════════════════════════════════════════════════════════════════════
+
+enum GameType {
+  MYSTERY_MEMBER
+  CONNECT_THE_DOTS
+  MEMORY_RECONSTRUCTION
+  TIME_MACHINE_QUIZ
+  DAILY_CHALLENGE
+
+  @@map("game_type")
+}
+
+/// Difficulty = cognitive complexity, not merely a shorter timer (PRD §P4).
+enum Difficulty {
+  EASY
+  MEDIUM
+  HARD
+  EXPERT
+  NIGHTMARE
+
+  @@map("difficulty")
+}
+
+enum QuestionStrategy {
+  /// EASY — one direct fact.
+  DIRECT_FACT
+  /// MEDIUM — intersection of several facts.
+  MULTIPLE_FACTS
+  /// HARD — read a relationship chain.
+  RELATIONSHIP
+  /// EXPERT — "same team as the center of Song X".
+  INDIRECT_RELATIONSHIP
+  /// NIGHTMARE — multi-hop historical reasoning.
+  MULTI_HOP
+
+  @@map("question_strategy")
+}
+
+enum AnswerMode {
+  MULTIPLE_CHOICE
+  TEXT_INPUT
+  GRAPH_BUILD
+  FORM_RECONSTRUCTION
+
+  @@map("answer_mode")
+}
+
+model GameDefinition {
+  id          String  @id @default(cuid())
+  code        String  @unique
+  name        String
+  description String?
+
+  gameType         GameType         @map("game_type")
+  difficulty       Difficulty
+  /// The entity type the player must identify or reconstruct.
+  targetEntityType EntityType       @map("target_entity_type")
+  questionStrategy QuestionStrategy @map("question_strategy")
+  answerMode       AnswerMode       @map("answer_mode")
+
+  clueCount    Int  @default(1) @map("clue_count")
+  optionCount  Int  @default(4) @map("option_count")
+  /// Graph traversal depth for INDIRECT_RELATIONSHIP / MULTI_HOP.
+  hopCount     Int  @default(1) @map("hop_count")
+  /// Challenges per session.
+  roundCount   Int  @default(5) @map("round_count")
+  timeLimitSec Int? @map("time_limit_sec")
+
+  /// Scoring (PRD §5.2).
+  pointsCorrect             Int @default(10) @map("points_correct")
+  pointsRelationshipCorrect Int @default(20) @map("points_relationship_correct")
+  pointsIncorrect           Int @default(-5) @map("points_incorrect")
+
+  /// Escape hatch for generator-specific knobs.
+  config Json?
+
+  isActive     Boolean @default(true) @map("is_active")
+  displayOrder Int     @default(100) @map("display_order")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  requiredRelationshipTypes GameDefinitionRelationshipType[]
+  sessions                  GameSession[]
+
+  @@index([gameType, difficulty])
+  @@map("game_definitions")
+}
+
+/// Which relationship types a definition needs in order to build a question.
+/// The generator skips subjects whose graph does not satisfy these.
+model GameDefinitionRelationshipType {
+  gameDefinitionId   String  @map("game_definition_id")
+  relationshipTypeId String  @map("relationship_type_id")
+  /// Required edges gate subject selection; optional ones enrich clues.
+  isRequired         Boolean @default(true) @map("is_required")
+
+  gameDefinition   GameDefinition   @relation(fields: [gameDefinitionId], references: [id], onDelete: Cascade)
+  relationshipType RelationshipType @relation(fields: [relationshipTypeId], references: [id], onDelete: Cascade)
+
+  @@id([gameDefinitionId, relationshipTypeId])
+  @@map("game_definition_relationship_types")
+}
+
+enum GameSessionStatus {
+  IN_PROGRESS
+  COMPLETED
+  ABANDONED
+
+  @@map("game_session_status")
+}
+
+model GameSession {
+  id String @id @default(cuid())
+
+  /// Null for anonymous play — public users may play without an account.
+  userId String?      @map("user_id") @db.Uuid
+  user   UserProfile? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  gameDefinitionId String         @map("game_definition_id")
+  gameDefinition   GameDefinition @relation(fields: [gameDefinitionId], references: [id], onDelete: Restrict)
+
+  gameType   GameType   @map("game_type")
+  difficulty Difficulty
+
+  /// "Test this Generation" / "Test me on this era" scoping (PRD §4.2).
+  scopeEntityId String? @map("scope_entity_id")
+  scopeEntity   Entity? @relation(fields: [scopeEntityId], references: [id], onDelete: SetNull)
+  /// Era/date scope for TIME_MACHINE_QUIZ.
+  scopeDate     DateTime? @map("scope_date") @db.Date
+
+  /// Deterministic generation seed — lets a challenge be replayed or shared.
+  seed String
+
+  status         GameSessionStatus @default(IN_PROGRESS)
+  score          Int               @default(0)
+  totalRounds    Int               @default(0) @map("total_rounds")
+  correctCount   Int               @default(0) @map("correct_count")
+  incorrectCount Int               @default(0) @map("incorrect_count")
+
+  startedAt   DateTime  @default(now()) @map("started_at")
+  completedAt DateTime? @map("completed_at")
+
+  challenges GameChallenge[]
+
+  @@index([userId, startedAt])
+  @@index([gameType, difficulty])
+  @@map("game_sessions")
+}
+
+/// One generated question plus the player's answer.
+model GameChallenge {
+  id        String      @id @default(cuid())
+  sessionId String      @map("session_id")
+  session   GameSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  ordinal          Int
+  questionStrategy QuestionStrategy @map("question_strategy")
+  answerMode       AnswerMode       @map("answer_mode")
+
+  /// Rendered prompt: clue list, graph fragment, or redacted profile.
+  prompt         Json
+  /// Multiple-choice options, when applicable.
+  options        Json?
+  /// Canonical answer for evaluation. Shape depends on answerMode.
+  expectedAnswer Json @map("expected_answer")
+
+  /// The entity the question is "about", for mastery attribution.
+  subjectEntityId String? @map("subject_entity_id")
+  subjectEntity   Entity? @relation(fields: [subjectEntityId], references: [id], onDelete: SetNull)
+
+  /// Mastery attribution: which scope/target this round trains.
+  masteryScope     MasteryScope?     @map("mastery_scope")
+  masteryTargetId  String?           @map("mastery_target_id")
+  masteryDimension MasteryDimension? @map("mastery_dimension")
+
+  submittedAnswer Json?     @map("submitted_answer")
+  /// V1 evaluation is binary — correct or incorrect (PRD §7).
+  isCorrect       Boolean?  @map("is_correct")
+  pointsAwarded   Int       @default(0) @map("points_awarded")
+  answeredAt      DateTime? @map("answered_at")
+  elapsedMs       Int?      @map("elapsed_ms")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([sessionId, ordinal])
+  @@index([subjectEntityId])
+  @@map("game_challenges")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 9. AUDIT LOG  (PRD §17)
+// ═══════════════════════════════════════════════════════════════════════════
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  RESTORE
+  BULK_IMPORT
+  CONFIG_CHANGE
+  DATA_HEALTH_RUN
+
+  @@map("audit_action")
+}
+
+model AuditLog {
+  id String @id @default(cuid())
+
+  actorId    String?      @map("actor_id") @db.Uuid
+  actor      UserProfile? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  /// Denormalised so the log survives profile deletion.
+  actorEmail String?      @map("actor_email")
+
+  action     AuditAction
+  /// Logical target: "Entity", "Relationship", "MasteryStatus", …
+  entityType String      @map("entity_type")
+  entityId   String?     @map("entity_id")
+  /// Human-readable line: "Kinal → MEMBER_OF → Team J".
+  summary    String
+
+  /// JSON snapshots (PRD §17).
+  before Json?
+  after  Json?
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@index([entityType, entityId])
+  @@index([actorId])
+  @@map("audit_logs")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 10. DATA HEALTH  (PRD §18)
+// ═══════════════════════════════════════════════════════════════════════════
+
+enum IssueSeverity {
+  INFO
+  WARNING
+  ERROR
+
+  @@map("issue_severity")
+}
+
+enum IssueStatus {
+  OPEN
+  IGNORED
+  RESOLVED
+
+  @@map("issue_status")
+}
+
+model DataHealthRun {
+  id          String    @id @default(cuid())
+  startedAt   DateTime  @default(now()) @map("started_at")
+  finishedAt  DateTime? @map("finished_at")
+  issuesFound Int       @default(0) @map("issues_found")
+  /// Per-check counts.
+  summary     Json?
+  triggeredBy String?   @map("triggered_by")
+
+  issues DataHealthIssue[]
+
+  @@index([startedAt])
+  @@map("data_health_runs")
+}
+
+model DataHealthIssue {
+  id String @id @default(cuid())
+
+  runId String?        @map("run_id")
+  run   DataHealthRun? @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  /// Stable check identifier, e.g. MEMBER_MISSING_GENERATION.
+  checkCode String        @map("check_code")
+  severity  IssueSeverity @default(WARNING)
+  status    IssueStatus   @default(OPEN)
+  message   String
+  details   Json?
+
+  entityId String? @map("entity_id")
+  entity   Entity? @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  relationshipId String?       @map("relationship_id")
+  relationship   Relationship? @relation(fields: [relationshipId], references: [id], onDelete: Cascade)
+
+  detectedAt DateTime  @default(now()) @map("detected_at")
+  resolvedAt DateTime? @map("resolved_at")
+
+  @@index([checkCode, status])
+  @@index([status, severity])
+  @@map("data_health_issues")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 11. SETTINGS  (PRD §14 → Admin → Settings)
+// ═══════════════════════════════════════════════════════════════════════════
+
+model AppSetting {
+  key         String  @id
+  value       Json
+  description String?
+  group       String  @default("general")
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("app_settings")
+}
