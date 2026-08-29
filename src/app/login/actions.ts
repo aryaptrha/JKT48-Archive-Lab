@@ -32,6 +32,52 @@ const MIN_PASSWORD_LENGTH = 8
 const NOT_CONFIGURED =
   'Accounts are not enabled on this deployment. The archive is fully readable and playable without one.'
 
+/**
+ * Shown both when a confirmation link has just been sent and when the address was
+ * already registered. One sentence for two outcomes, on purpose — see
+ * `signUpOutcome()`.
+ */
+const CONFIRM_NOTICE = 'Check your email for a confirmation link, then sign in.'
+
+const GENERIC_SIGNUP_FAILURE = 'The account could not be created. Try again in a moment.'
+
+/**
+ * What the provider said, translated into something worth reading.
+ *
+ * Supabase's `message` is written for whoever is reading the logs: it names
+ * internal services and carries wording no player can act on — a real report from
+ * this form read `Invalid path specified in request URL`, which tells the person
+ * holding it nothing at all. Worse, on a project that does not require email
+ * confirmation the raw message is `User already registered`, and echoing that
+ * turns this form into the address-enumeration oracle the rest of this file is
+ * careful not to be.
+ *
+ * So the provider's text is logged, never displayed, and only the codes we have
+ * a useful sentence for are distinguished. `code` is the stable identifier;
+ * `message` is prose the provider may reword at any time, so it is never matched
+ * against.
+ */
+function signUpFailureMessage(code: string | undefined): string {
+  switch (code) {
+    case 'over_email_send_rate_limit':
+    case 'over_request_rate_limit':
+      // The common one in practice: the built-in mailer allows only a couple of
+      // sends an hour, so a few attempts in a row look like a broken form.
+      return 'Too many attempts from this address just now. Wait a few minutes, then try again.'
+    case 'email_address_invalid':
+      return 'That email address was not accepted. Check it for a typo.'
+    case 'weak_password':
+      return `Choose a password of at least ${MIN_PASSWORD_LENGTH} characters.`
+    case 'signup_disabled':
+    case 'email_provider_disabled':
+      return 'New accounts are not being created on this deployment right now.'
+    case 'validation_failed':
+      return 'Enter an email address and a password.'
+    default:
+      return GENERIC_SIGNUP_FAILURE
+  }
+}
+
 /** Trimmed text field. Passwords are read separately — trimming one is data loss. */
 function field(formData: FormData, key: string): string {
   const value = formData.get(key)
@@ -154,29 +200,46 @@ export async function signUpAction(formData: FormData): Promise<void> {
     })
 
     if (error) {
-      logger.warn('auth.signUp rejected', { reason: error.message })
-      outcome = back({ next, mode: 'signup', error: error.message, email })
+      // The provider's own wording stays here, where an operator can read it, and
+      // `code`/`status` come with it: the sentence shown to the player is
+      // deliberately lossy, so the log has to be the place the real reason lives.
+      logger.warn('auth.signUp rejected', {
+        reason: error.message,
+        code: error.code,
+        status: error.status,
+      })
+
+      if (error.code === 'user_already_exists' || error.code === 'email_exists') {
+        // The same sentence a brand-new address gets. Telling the two apart is
+        // precisely the enumeration this form must not offer, and Supabase only
+        // hands us the distinction because email confirmation happens to be off.
+        outcome = back({ next, notice: CONFIRM_NOTICE, email })
+      } else {
+        outcome = back({
+          next,
+          mode: 'signup',
+          error: signUpFailureMessage(error.code),
+          email,
+        })
+      }
     } else if (data.session) {
-      // Email confirmation is switched off on this project, so the account is
-      // usable immediately.
+      // A session comes back only when the project does not require email
+      // confirmation; then the account is usable immediately. With confirmation
+      // switched on this branch never runs and the notice below is what happens.
       await getCurrentProfile()
       outcome = next
     } else {
       // Confirmation required. Worded so it is also true when the address was
       // already registered, which is the case Supabase deliberately does not
-      // distinguish — and neither should we.
-      outcome = back({
-        next,
-        notice: 'Check your email for a confirmation link, then sign in.',
-        email,
-      })
+      // distinguish — and neither does the branch above.
+      outcome = back({ next, notice: CONFIRM_NOTICE, email })
     }
   } catch (error) {
     logger.error('auth.signUp failed', error)
     outcome = back({
       next,
       mode: 'signup',
-      error: 'The account could not be created. Try again in a moment.',
+      error: GENERIC_SIGNUP_FAILURE,
       email,
     })
   }
