@@ -1,4 +1,4 @@
-import { revalidateTag } from 'next/cache'
+import { updateTag } from 'next/cache'
 
 /**
  * Cache tags for the public read models (PRD §26, §31).
@@ -28,12 +28,27 @@ export const ARCHIVE_TAGS = {
  */
 export const ARCHIVE_CACHE_SECONDS = 300
 
+/*
+ * `updateTag`, not `revalidateTag`.
+ *
+ * In Next 16 `revalidateTag` takes a `cacheLife` profile as its second argument
+ * and schedules expiry against it, which is not what a curator pressing Save
+ * needs. `updateTag` expires the tag immediately and carries read-your-own-writes
+ * semantics, so the redirect after a mutation lands on the new value rather than
+ * on the one the editor just replaced.
+ *
+ * The tradeoff is that `updateTag` may only be called from inside a Server
+ * Action. Every caller of these two helpers is one — the six `admin/**\/actions.ts`
+ * files — and a future caller that is not (a route handler, a cron job) needs
+ * `revalidateTag(tag, { expire: 0 })` instead.
+ */
+
 /** Call after any entity, relationship, source or era mutation. */
 export function revalidateArchiveGraph(): void {
-  revalidateTag(ARCHIVE_TAGS.graph)
+  updateTag(ARCHIVE_TAGS.graph)
 }
 
 /** Call after any game definition mutation. */
 export function revalidateArchiveGames(): void {
-  revalidateTag(ARCHIVE_TAGS.games)
+  updateTag(ARCHIVE_TAGS.games)
 }
