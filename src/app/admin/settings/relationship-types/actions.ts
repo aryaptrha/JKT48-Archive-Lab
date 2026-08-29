@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation'
 
 import { requireAdmin } from '@/lib/auth/session'
 import { actorFromProfile } from '@/server/services/audit'
+import { revalidateArchiveGraph } from '@/server/cache/tags'
 import {
   retireRelationshipType,
   saveRelationshipType,
@@ -60,6 +61,7 @@ export async function saveRelationshipTypeAction(formData: FormData): Promise<vo
     redirect(withQuery('/admin/settings/relationship-types', 'error', result.message))
   }
 
+  revalidateArchiveGraph()
   revalidatePath('/admin/settings/relationship-types')
   revalidatePath('/admin/relationships')
 
@@ -85,6 +87,7 @@ export async function retireRelationshipTypeAction(formData: FormData): Promise<
     redirect(withQuery('/admin/settings/relationship-types', 'error', result.message))
   }
 
+  revalidateArchiveGraph()
   revalidatePath('/admin/settings/relationship-types')
   revalidatePath('/admin/relationships')
 

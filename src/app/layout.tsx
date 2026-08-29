@@ -45,6 +45,15 @@ const mono = IBM_Plex_Mono({
   weight: ['400', '500'],
   display: 'swap',
   variable: '--font-plex-mono',
+  /*
+   * Not preloaded, unlike the two reading faces. This one sets catalogue numbers,
+   * datelines and counts — short strings in small type, none of which is the
+   * first thing anyone reads. Preloading all three makes them compete for the
+   * first few connections and delays the face the headline is set in; leaving
+   * this one to load on demand costs a brief fallback on a `tabular-nums` label
+   * and buys a sooner first paint of the text that matters.
+   */
+  preload: false,
 })
 
 export const metadata: Metadata = {

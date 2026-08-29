@@ -12,7 +12,11 @@ import { cn } from '@/lib/utils'
  * grid of widgets.
  */
 export type SectionHeadingProps = {
-  eyebrow?: string
+  /**
+   * A node rather than a string, so a heading can stream one counted figure
+   * inside its eyebrow while the rest of the line renders immediately.
+   */
+  eyebrow?: ReactNode
   title: ReactNode
   lead?: ReactNode
   action?: ReactNode

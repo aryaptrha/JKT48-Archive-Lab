@@ -50,10 +50,18 @@ export function Portrait({
   entity,
   size = 'md',
   className,
+  priority = false,
 }: {
   entity: Pick<EntityRef, 'canonicalName' | 'imageUrl'>
   size?: 'sm' | 'md' | 'lg' | 'xl'
   className?: string
+  /**
+   * Load this portrait eagerly. Set it only for an image that is the page's
+   * largest above-the-fold element — the `xl` portrait in a record page header —
+   * because every image marked this way competes with the others for the first
+   * few connections.
+   */
+  priority?: boolean
 }) {
   const dimensions = { sm: 32, md: 48, lg: 72, xl: 160 }[size]
   const initials = entity.canonicalName
@@ -78,6 +86,7 @@ export function Portrait({
           width={dimensions}
           height={dimensions}
           className="size-full object-cover"
+          priority={priority}
           // Decorative: the name is always rendered as text beside it, so an
           // alt attribute here would be read twice.
           aria-hidden

@@ -49,5 +49,35 @@ export function requireDatabaseUrl(): string {
   return required('DATABASE_URL', process.env.DATABASE_URL)
 }
 
+/**
+ * Connections per function instance (PRD §31).
+ *
+ * PgBouncer does the real pooling, so this is only how many queries one instance
+ * may have in flight at once. It matters more than it looks: the read models run
+ * their independent queries through `Promise.all`, and at `max: 1` those queue
+ * behind a single connection — the parallelism is written but not delivered. Set
+ * `DATABASE_POOL_MAX=1` to restore the strictest behaviour.
+ */
+export function databasePoolMax(): number {
+  const raw = Number.parseInt(process.env.DATABASE_POOL_MAX ?? '', 10)
+  if (!Number.isFinite(raw) || raw < 1) return 3
+  return Math.min(10, raw)
+}
+
+/**
+ * Whether a request carries a Supabase session at all.
+ *
+ * `@supabase/ssr` stores the session in `sb-<project-ref>-auth-token`, chunked
+ * across `.0`, `.1`, … when it exceeds the cookie size limit. No such cookie
+ * means there is no session to validate, which lets both the middleware and the
+ * server components skip a network round trip to Supabase Auth for anonymous
+ * readers — the majority of traffic to a public archive.
+ */
+export function hasSupabaseAuthCookie(cookies: readonly { name: string }[]): boolean {
+  return cookies.some(
+    (cookie) => cookie.name.startsWith('sb-') && cookie.name.includes('-auth-token'),
+  )
+}
+
 export const isProduction = process.env.NODE_ENV === 'production'
 export const isDevelopment = process.env.NODE_ENV === 'development'

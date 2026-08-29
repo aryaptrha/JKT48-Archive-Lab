@@ -1,3 +1,5 @@
+import { cache } from 'react'
+
 import type { EntityType, Prisma } from '@/generated/prisma/client'
 import { prisma } from '@/lib/prisma/client'
 
@@ -48,6 +50,15 @@ export type EntityListOptions = {
   /** Admin views pass true; public views must not. */
   includeUnpublished?: boolean
   orderBy?: 'name' | 'prominence' | 'recent' | 'chronological'
+  /**
+   * Whether the caller needs `total`. Defaults to true.
+   *
+   * A paginated view has to know how many pages there are, so it pays for a
+   * `count(*)` over the whole filtered set. A rail of six cards does not render a
+   * total at all, and for those the count was a second full scan bought for
+   * nothing. Pass `false` and `total` reports the number of rows returned.
+   */
+  withTotal?: boolean
 }
 
 const DEFAULT_PAGE_SIZE = 24
@@ -93,21 +104,34 @@ export async function listEntities(options: EntityListOptions = {}) {
   const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, options.pageSize ?? DEFAULT_PAGE_SIZE))
   const where = buildWhere(options)
 
-  const [rows, total] = await Promise.all([
-    prisma.entity.findMany({
-      where,
-      include: entityAttributesInclude,
-      orderBy: buildOrderBy(options.orderBy),
-      skip: (page - 1) * pageSize,
-      take: pageSize,
-    }),
-    prisma.entity.count({ where }),
-  ])
+  const findRows = prisma.entity.findMany({
+    where,
+    include: entityAttributesInclude,
+    orderBy: buildOrderBy(options.orderBy),
+    skip: (page - 1) * pageSize,
+    take: pageSize,
+  })
+
+  if (options.withTotal === false) {
+    const rows = await findRows
+    return { rows, total: rows.length, page, pageSize }
+  }
+
+  const [rows, total] = await Promise.all([findRows, prisma.entity.count({ where })])
 
   return { rows, total, page, pageSize }
 }
 
-export async function findEntityBySlug(slug: string, includeUnpublished = false) {
+/**
+ * One entity by slug, deduplicated per request render.
+ *
+ * The record route reads the same entity twice — once in `generateMetadata` for
+ * the title and description, once in the page component — and both run inside a
+ * single request, so the second call can be answered from the first. Public reads
+ * only: admin paths look entities up by id, so no mutation seeds this cache with
+ * a row it then goes on to change.
+ */
+export const findEntityBySlug = cache(async (slug: string, includeUnpublished = false) => {
   const entity = await prisma.entity.findUnique({
     where: { slug },
     include: entityAttributesInclude,
@@ -116,7 +140,7 @@ export async function findEntityBySlug(slug: string, includeUnpublished = false)
   if (!entity) return null
   if (!includeUnpublished && !entity.isPublished) return null
   return entity
-}
+})
 
 export async function findEntityById(id: string, includeUnpublished = false) {
   const entity = await prisma.entity.findUnique({

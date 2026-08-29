@@ -199,6 +199,13 @@ export async function deleteRelationship(id: string) {
   return prisma.relationship.delete({ where: { id } })
 }
 
+/** An edge that is temporal, active and visible — the timeline's raw material. */
+const transitionWhere: Prisma.RelationshipWhereInput = {
+  relationshipType: { isActive: true, isTemporal: true },
+  source: { isPublished: true },
+  target: { isPublished: true },
+}
+
 /**
  * Edges whose validity *begins or ends* inside a window.
  *
@@ -208,9 +215,7 @@ export async function deleteRelationship(id: string) {
 export async function findEdgeTransitions(from: Date, to: Date): Promise<EdgeRow[]> {
   return prisma.relationship.findMany({
     where: {
-      relationshipType: { isActive: true, isTemporal: true },
-      source: { isPublished: true },
-      target: { isPublished: true },
+      ...transitionWhere,
       OR: [
         { validFrom: { gte: from, lte: to } },
         { validTo: { gte: from, lte: to } },
@@ -219,6 +224,54 @@ export async function findEdgeTransitions(from: Date, to: Date): Promise<EdgeRow
     include: edgeInclude,
     orderBy: [{ validFrom: { sort: 'asc', nulls: 'last' } }],
   })
+}
+
+/** One edge endpoint, tagged with which end of the edge it is. */
+export type EdgeTransition = { row: EdgeRow; kind: 'START' | 'END'; date: Date }
+
+/**
+ * The most recent transitions, newest first.
+ *
+ * The home page shows six of these, and it used to get them by loading every
+ * transition since 2011 — four joins per row, the whole history of the archive —
+ * and then slicing. This asks the question the page is actually asking: two
+ * `LIMIT n` scans down the indexes, merged in memory. That merge is why it cannot
+ * be one query: a row's relevant date is `validFrom` for a start and `validTo`
+ * for an end, and Postgres cannot order by "whichever of these two applies".
+ *
+ * Bounded by `asOf` so an announced-but-not-yet-effective graduation does not
+ * head a list of things that have already happened.
+ */
+export async function findRecentTransitions(
+  limit: number,
+  asOf: Date,
+): Promise<EdgeTransition[]> {
+  const take = Math.min(50, Math.max(1, limit))
+
+  const [started, ended] = await Promise.all([
+    prisma.relationship.findMany({
+      where: { ...transitionWhere, validFrom: { not: null, lte: asOf } },
+      include: edgeInclude,
+      orderBy: [{ validFrom: 'desc' }],
+      take,
+    }),
+    prisma.relationship.findMany({
+      where: { ...transitionWhere, validTo: { not: null, lte: asOf } },
+      include: edgeInclude,
+      orderBy: [{ validTo: 'desc' }],
+      take,
+    }),
+  ])
+
+  const transitions: EdgeTransition[] = [
+    ...started.flatMap((row) =>
+      row.validFrom ? [{ row, kind: 'START' as const, date: row.validFrom }] : [],
+    ),
+    ...ended.flatMap((row) => (row.validTo ? [{ row, kind: 'END' as const, date: row.validTo }] : [])),
+  ]
+
+  transitions.sort((a, b) => b.date.getTime() - a.date.getTime())
+  return transitions.slice(0, take)
 }
 
 /**

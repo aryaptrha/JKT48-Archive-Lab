@@ -8,6 +8,7 @@ import { requireAdmin } from '@/lib/auth/session'
 import { errorState } from '@/lib/form-state'
 import { createEntity, deleteEntity, setEntityPublished, updateEntity } from '@/server/services/entity-admin'
 import { actorFromProfile } from '@/server/services/audit'
+import { revalidateArchiveGraph } from '@/server/cache/tags'
 
 import type { EntityType } from '@/generated/prisma/enums'
 import type { AdminFormState } from '@/lib/form-state'
@@ -55,8 +56,14 @@ function readAttributes(formData: FormData): Record<string, unknown> {
  * `entityType` + `slug`, which is exactly what the create/update/publish forms
  * already carry as hidden inputs — so this never needs a second read of the row
  * it just wrote.
+ *
+ * The tag drop is what covers everything a path list cannot name: the home page's
+ * rails and counts, this record's appearance in another record's related strip,
+ * every cached browse page of its collection. Without it a curator's edit would
+ * sit behind the cache window on pages they never thought to look at.
  */
 function revalidateEntityPaths(id: string, entityType: string, slug: string) {
+  revalidateArchiveGraph()
   revalidatePath('/admin/entities')
   revalidatePath(`/admin/entities/${id}`)
 
@@ -181,6 +188,7 @@ export async function deleteEntityAction(formData: FormData): Promise<void> {
     redirect(withQuery(`/admin/entities/${id}`, 'error', result.message))
   }
 
+  revalidateArchiveGraph()
   revalidatePath('/admin/entities')
   const entityType = formData.get('entityType')
   if (typeof entityType === 'string') {
