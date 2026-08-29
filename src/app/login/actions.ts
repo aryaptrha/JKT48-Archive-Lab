@@ -33,11 +33,20 @@ const NOT_CONFIGURED =
   'Accounts are not enabled on this deployment. The archive is fully readable and playable without one.'
 
 /**
- * Shown both when a confirmation link has just been sent and when the address was
- * already registered. One sentence for two outcomes, on purpose — see
- * `signUpOutcome()`.
+ * Only for the case it describes: a confirmation link really was just sent.
+ *
+ * It used to double as the answer for an address that was already registered,
+ * which read as neutral but told that person to wait for mail that was never
+ * going to arrive. Wrong instructions are not a safer kind of vagueness.
  */
 const CONFIRM_NOTICE = 'Check your email for a confirmation link, then sign in.'
+
+/**
+ * A duplicate address. Not phrased as a failure — nothing went wrong, the person
+ * already has the account they were trying to make and is two fields away from
+ * using it.
+ */
+const ALREADY_REGISTERED = 'That address already has an account. Sign in with it below.'
 
 const GENERIC_SIGNUP_FAILURE = 'The account could not be created. Try again in a moment.'
 
@@ -210,10 +219,18 @@ export async function signUpAction(formData: FormData): Promise<void> {
       })
 
       if (error.code === 'user_already_exists' || error.code === 'email_exists') {
-        // The same sentence a brand-new address gets. Telling the two apart is
-        // precisely the enumeration this form must not offer, and Supabase only
-        // hands us the distinction because email confirmation happens to be off.
-        outcome = back({ next, notice: CONFIRM_NOTICE, email })
+        // Supabase only returns this when the project does not require email
+        // confirmation — with confirmation on, a duplicate is answered as success
+        // precisely so that the two cannot be told apart, and this branch is
+        // unreachable.
+        //
+        // With it off, though, the outcomes are already distinguishable without
+        // reading a word: a new address ends up signed in at `next`, an existing
+        // one ends up back here. Staying vague therefore withholds nothing the
+        // redirect has not given away, and costs the person their next move. So
+        // say what happened and point at the form that will work — with `signin`
+        // the address is carried into that panel rather than this one.
+        outcome = back({ next, mode: 'signin', notice: ALREADY_REGISTERED, email })
       } else {
         outcome = back({
           next,
@@ -229,9 +246,10 @@ export async function signUpAction(formData: FormData): Promise<void> {
       await getCurrentProfile()
       outcome = next
     } else {
-      // Confirmation required. Worded so it is also true when the address was
-      // already registered, which is the case Supabase deliberately does not
-      // distinguish — and neither does the branch above.
+      // No session and no error: confirmation is required. This is also the reply
+      // Supabase gives for an address that already exists when confirmation is on
+      // — it withholds the difference on purpose, and there is nothing here to
+      // recover it from, so one sentence has to serve both.
       outcome = back({ next, notice: CONFIRM_NOTICE, email })
     }
   } catch (error) {
