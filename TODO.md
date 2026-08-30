@@ -1,10 +1,29 @@
 # TODO — JKT48 Archive Lab
 
-Work order for finishing the V1 starter. Read `docs/CONVENTIONS.md` before writing
-any file in here; it holds the invariants and the language-level traps that this
-codebase has already been bitten by, and it is shorter than re-deriving them.
+Read `docs/CONVENTIONS.md` before writing any file in here; it holds the invariants
+and the language-level traps that this codebase has already been bitten by, and it is
+shorter than re-deriving them.
 
 Section references (§) are to `JKT48_Archive_Lab_PRD_v1.md`.
+
+---
+
+## Status — V1 is built
+
+This file began as the work order for the V1 starter, and every numbered job below
+has since shipped. It is kept because the **rationale** under each heading is still
+the reason those files are shaped the way they are — read a section before changing
+the screens it describes, not before writing them.
+
+| Job | State |
+| --- | --- |
+| §1 Admin CMS screens | **Built.** All of `/admin/**`, plus `/admin/import` (§5). |
+| §2 API v1 — 14 endpoints + `_lib/respond.ts` | **Built** under `src/app/api/v1/`. |
+| §3 Seed — `prisma/seed.ts` | **Built.** Idempotent, upserts on natural keys. |
+| §4 Docs | **Built.** `README.md`, `docs/ARCHITECTURE.md`, `docs/CONVENTIONS.md`. |
+| §5 V1.1 backlog | Still deferred, **except** bulk import — see that section. |
+
+What is genuinely outstanding is the V1.1 list in §5.
 
 ---
 
@@ -18,18 +37,13 @@ npm run verify      # prisma validate → tsc --noEmit → eslint (PASSED - 0 er
 - `tsc --noEmit` — **PASSED.** Strict TypeScript checks pass with 0 errors.
 - `eslint` — **PASSED.** Next.js & TypeScript ESLint rules pass with 0 errors.
 
-### Files awaiting their first typecheck
+`npm run verify` is necessary and not sufficient — it does not compile a single
+route. Run `npm run build` too for any change under `src/app/`.
 
-Written by the stopped fan-out, complete but unverified:
+### Two things that stay true of `entities/actions.ts` and `data-health/`
 
-| File | Notes |
-| --- | --- |
-| `src/app/admin/entities/actions.ts` | `saveEntityAction`, `setPublishedAction`, `deleteEntityAction` |
-| `src/app/admin/data-health/page.tsx` | 477 lines; check it against the real `getHealthIssues` filter set |
-| `src/app/admin/data-health/actions.ts` | `runScanAction`, `setIssueStatusAction` |
-
-Two things to check by hand in those, because they are the mistakes most likely
-to have been made:
+These were the two mistakes most likely to be made when those files were written.
+They are now correct, and they are the two a refactor is most likely to undo:
 
 1. `getHealthIssues` filters on `status`, `checkCode`, `page`, `pageSize` — **not
    on severity.** `/admin/data-health?severity=…` is a link the dashboard already
@@ -41,13 +55,16 @@ to have been made:
 
 ---
 
-## 1. Admin CMS — remaining screens
+## 1. Admin CMS — built; the constraints each screen holds to
 
-`src/app/admin/{layout,page}.tsx` exist and are done. Everything else under
-`/admin` is outstanding. The dashboard already links to every path listed here,
-so **the routes are fixed** — do not rename them.
+Every screen below is built. The dashboard links to every path listed here, so
+**the routes are fixed** — do not rename them. What follows each heading is the
+reasoning the screen already embodies: the service signatures it calls, and the
+decisions it would be easy to reverse by accident. Read the relevant part before
+changing a screen; treat the imperative voice ("use the URL", "surface those
+messages") as a constraint the code currently satisfies, not as work outstanding.
 
-Shared pieces that already exist and should not be rebuilt:
+Shared pieces to compose with rather than rebuild:
 `src/components/admin/admin-chrome.tsx` (`FormBanner`, `AuditTrail`, `AuditEntry`,
 `DangerZone`, `PublishBadge`, `AdminFigure`, `MetaRow`, `severityTone`,
 `actionTone`, `actionLabel`), `src/components/admin/entity-form.tsx`,
@@ -55,7 +72,7 @@ Shared pieces that already exist and should not be rebuilt:
 
 ### 1.1 Records — `src/app/admin/entities/`
 
-`actions.ts` is written. Still needed:
+The three routes and their action module:
 
 - `page.tsx` — the work queue. `getAdminEntityList({page?, pageSize?, search?, entityType?})`
   returns `{ rows: Paginated<AdminEntityRow>, applied, typeOptions }` where
@@ -130,7 +147,7 @@ link for one that does not.
 
 ### 1.5 Data health — `src/app/admin/data-health/`
 
-Written, unverified. See §0 above for the two specific things to check.
+Built. See §0 above for the two constraints this screen must keep holding.
 
 ### 1.6 Games — `src/app/admin/games/{page,actions}.tsx`
 
@@ -203,9 +220,23 @@ the roll-up is weighted rather than averaged.
   admin count is 1, matching the dashboard's existing wording. Display nothing
   beyond what a role decision needs: no password material, no session tokens.
 
+### 1.9 Bulk import — `src/app/admin/import/{page,actions}.tsx`
+
+`previewBulkImport(request)` and `commitBulkImport(request, actor)` from
+`@/server/services/bulk-import`, over `parseImport()` in `@/domain/bulk-import`.
+State lives in `@/lib/import-state` (`ImportState`, `IDLE_IMPORT_STATE`).
+
+The one admin screen that does not redirect on success, because the per-row report
+*is* the result. One Server Action serves both buttons, separated by an `intent`
+field; one service function serves both, separated by whether an `Actor` was passed.
+Do not split either — a dry run that does not execute the commit's code path is worse
+than no dry run. Full rationale and the deliberate limits are in
+`docs/ARCHITECTURE.md` §6 and the README's Bulk Import section; §5 below records what
+it will not do.
+
 ---
 
-## 2. API v1 — `src/app/api/v1/**` (not started)
+## 2. API v1 — `src/app/api/v1/**` (built)
 
 `src/app/api/` does not exist yet. Fourteen endpoints per §21:
 
@@ -255,7 +286,7 @@ precisely why there are no snapshot tables (§11).
 
 ---
 
-## 3. Seed — `prisma/seed.ts` (not started)
+## 3. Seed — `prisma/seed.ts` (built)
 
 `package.json` already has `db:seed`; check `prisma.config.ts` for the seed entry
 and add it if missing. Almost all the data already exists as typed constants —
@@ -304,7 +335,7 @@ makes the seed unrunnable.
 
 ---
 
-## 4. Docs (not started)
+## 4. Docs (built)
 
 - `README.md` — what this is (a knowledge graph of JKT48 history, with games
   generated *from* it; the graph is the product and everything else consumes it,
@@ -320,7 +351,13 @@ makes the seed unrunnable.
   auth and why middleware cannot make the admin check (Prisma does not run on the
   Edge, so middleware only sees whether a session cookie exists); data health and
   provenance; the design system and the §P5 exclusions; and a short "how to add an
-  entity type / relationship type / game" with concrete file lists.
+  entity type / relationship type / game" with concrete file lists. Plus §6, bulk
+  import: where the parse/plan/write split sits in the layering, why preview and
+  commit are one code path, and why there is no batch transaction.
+- `docs/CONVENTIONS.md` — the nine invariants, the TypeScript and ESLint traps this
+  codebase has actually tripped over, the design language and its §P5 exclusions, the
+  three shapes of admin mutation, and the component gotchas. This is the file to read
+  before writing code; the two above describe the system, this one describes the rules.
 
 Everything claimed must be true of the code as written. A README that overstates
 is worse than a short one.
@@ -355,6 +392,10 @@ What it deliberately does not do, if it is picked up again:
 ---
 
 ## Appendix — resuming the parallel build
+
+Historical, and kept for the ownership rule at the end rather than the path: the
+script below lived on the machine the V1 build ran on and is not present in this
+checkout, so treat the resume instructions as a record of how it was done.
 
 The fan-out that produced the files in §0 is recoverable. Its script is at:
 

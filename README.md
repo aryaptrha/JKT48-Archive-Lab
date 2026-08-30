@@ -111,8 +111,10 @@ npm run db:seed
 | `npm run db:validate` | Validates `prisma/schema.prisma` syntax and relations |
 | `npm run db:migrate` | Runs Prisma development migrations (`prisma migrate dev`) |
 | `npm run db:deploy` | Applies production migrations (`prisma migrate deploy`) |
-| `npm run db:seed` | Runs `prisma/seed.ts` via `tsx` |
+| `npm run db:seed` | Runs `prisma db seed`, which runs `prisma/seed.ts` via `tsx` (entry point in `prisma.config.ts`) |
+| `npm run db:reset` | Drops, re-migrates and re-seeds the database. **Development only** |
 | `npm run db:studio` | Opens Prisma Studio to inspect the database |
+| `npm run format` | Formats `ts,tsx,css,md,json` with Prettier |
 
 ---
 
@@ -165,7 +167,86 @@ npm run db:seed
 
 ---
 
-## 6. V1 Scope vs V1.1 Backlog
+## 6. Bulk Import (`/admin/import`)
+
+Curating one record at a time is the right shape for one record. It is the wrong
+shape for a generation of sixteen members and the forty-odd edges that place them in
+the graph — which is the actual unit of work when the archive gains a season.
+
+`/admin/import` takes a pasted sheet or an uploaded file, shows a per-row dry run,
+and only then commits. **Preview and commit run the same code path** — same parse,
+same plan, same guardrails — because that is the only thing that makes a preview
+worth reading.
+
+### Two modes
+
+| Mode | Writes | Required columns |
+| --- | --- | --- |
+| **Records** | `Entity` + its specialized attribute row | `canonicalName` |
+| **Relationships** | `Relationship` edges with temporal validity | `sourceRef`, `typeCode`, `targetRef` |
+
+Both accept **CSV, TSV and JSON**, up to **500 rows / ~1 MB** per batch. A downloadable
+template header is generated per mode and record type.
+
+> The ~1 MB cap sits under the Server Action body limit
+> (`experimental.serverActions.bodySizeLimit: '2mb'` in `next.config.ts`). Raising
+> `MAX_IMPORT_BYTES` without raising that limit turns a large upload into an opaque
+> request failure rather than a readable error.
+
+### Column handling
+
+- Headers match loosely: `Canonical Name`, `canonical_name` and `canonicalName` are
+  one column, and a field's editor label works as well as its schema name. Common
+  aliases are accepted (`name`, `type`, `from`, `to`, `start`, `end`, …).
+- Anything unmatched is **reported, never silently dropped**.
+- An empty cell means *not provided*, never *clear this field*. A half-filled sheet
+  is the normal case, so an update run cannot blank curated columns the operator
+  simply left out.
+- Record sheets have **no `team`, `generation` or `centerSong` column, and cannot**.
+  Those are edges with validity windows (§10), imported in relationship mode. Such a
+  header lands in the ignored-columns list where the operator can see it, rather than
+  quietly re-introducing the foreign key the schema deliberately omits.
+- Relationship endpoints are references, not cuids: a slug, a record id, or a name
+  that slugifies to one.
+- `provenance` matches the sources register by exact name or id. An unrecognised
+  value **fails its row** rather than importing the record uncited.
+- Dates are `YYYY-MM-DD`. A date on a non-temporal relationship type is refused
+  rather than ignored — it is a category error, not a formatting nuisance (§11).
+
+### Conflict policy
+
+A row naming something already in the archive — a taken slug, or an edge with the
+same identity — is resolved by the operator's explicit choice: **skip** it and keep
+the existing row, **update** the existing row, or **fail** the row as an error.
+
+### Guarantees, and the deliberate limits
+
+Every row is written through `createEntity`, `updateEntity`, `createRelationship` or
+`updateRelationship` — one row at a time, through the same audited services the
+single-record editors use. That is slower than a bulk insert and it is the point:
+slug resolution, the relationship guardrails and the audit entry all live in those
+services, so an imported record is indistinguishable from a hand-curated one and
+every row still gets its own line in its own history panel (§17). The batch itself is
+additionally recorded as one `BULK_IMPORT` audit entry carrying the counts and a
+capped manifest of what it applied.
+
+Because it composes independent audited services, **the batch is not wrapped in a
+single transaction.** The default is therefore to refuse the whole commit unless
+every row validates, so the all-or-nothing case needs no rollback. An operator who
+would rather take the good rows and fix the rest opts into partial application
+explicitly, and is told exactly which lines were left behind.
+
+Import deliberately does **not**:
+
+- **delete or unpublish** anything — removal stays a deliberate act in the record
+  editor, where the cascade warning with real numbers lives;
+- **change an existing record's type** — a slug reused under a different type fails,
+  rather than migrating a row between specialized attribute tables;
+- **create sources** — provenance must already exist in the register.
+
+---
+
+## 7. V1 Scope vs V1.1 Backlog
 
 ### V1 Complete:
 - Core Knowledge Graph & Generic Entity + 10 Specialized Attribute Tables
@@ -185,3 +266,30 @@ npm run db:seed
 - Public achievement system & leaderboards
 - Automated web crawlers & staging pipeline
 - Per-member mastery scoping
+
+---
+
+## 8. Deployment (Vercel)
+
+No `vercel.json` is required — the defaults match this project.
+
+- **Build command:** `npm run build` (`prisma generate && next build`). Prisma Client
+  is generated at build time, so it is not committed.
+- **Environment variables:** every key listed under §3 "Configure Environment Variables" must be set on the Vercel project.
+  `DATABASE_URL` is the **pooled** Supabase connection (port 6543, `pgbouncer=true`)
+  because serverless functions exhaust direct connections; `DIRECT_URL` is the direct
+  connection (port 5432) and is used only by Migrate, which needs DDL and advisory
+  locks PgBouncer's transaction mode cannot execute. See `prisma.config.ts`.
+- **`SUPABASE_SERVICE_ROLE_KEY` is server-only.** It has no `NEXT_PUBLIC_` prefix for
+  that reason — never add one (§28, §35).
+- **`NEXT_PUBLIC_SITE_URL`** must be the deployed origin, or Supabase Auth email
+  links will point at localhost.
+- **Migrations:** run `npm run db:deploy` (`prisma migrate deploy`) against the
+  production database as a release step. `prisma db push` is **not** a production
+  migration mechanism, and the production database is not edited by hand (§24).
+- **Images:** remote patterns are derived from `NEXT_PUBLIC_SUPABASE_URL` at config
+  load. A malformed value is logged and leaves the pattern list empty rather than
+  failing the build, so Supabase-hosted media would silently stop loading — check the
+  build log for that warning if images disappear.
+- **Seeding production** is not part of deploy. `npm run db:seed` is idempotent and
+  upserts on natural keys, but run it deliberately.
