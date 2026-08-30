@@ -15,8 +15,47 @@ function required(name: string, value: string | undefined): string {
   return value
 }
 
+/**
+ * The Supabase project origin, whatever shape the environment supplied.
+ *
+ * A project URL is a bare origin: the client appends `/auth/v1/…` and
+ * `/rest/v1/…` itself. The dashboard also displays a Data API URL that ends in
+ * `/rest/v1`, and setting this variable to that one breaks silently and
+ * completely — every auth call is then addressed to PostgREST, which answers
+ * `404 PGRST125 "Invalid path specified in request URL"`. Sign-up showed that
+ * sentence to the player; sign-in and `getAuthUser()` swallowed it and simply
+ * never produced a session, which is the harder half of the bug to find.
+ *
+ * A path is therefore discarded rather than trusted, and the discard is logged
+ * so the misconfiguration is still visible to whoever deployed it. An
+ * unparseable value yields '' so `isSupabaseConfigured()` reports the truth and
+ * the archive degrades to anonymous-only instead of failing per request.
+ */
+function supabaseOrigin(raw: string | undefined): string {
+  const value = raw?.trim()
+  if (!value) return ''
+
+  try {
+    const { origin, pathname } = new URL(value)
+    if (pathname !== '/' && pathname !== '') {
+      console.warn(
+        `NEXT_PUBLIC_SUPABASE_URL contains a path ("${pathname}"), which has been ignored. ` +
+          'Set it to the project origin alone, e.g. https://<project-ref>.supabase.co — not the ' +
+          'Data API URL ending in /rest/v1, which misaddresses every auth request to PostgREST.',
+      )
+    }
+    return origin
+  } catch {
+    console.warn(
+      `NEXT_PUBLIC_SUPABASE_URL is not a valid URL ("${value}") and has been ignored. ` +
+        'Accounts will be disabled until it is set to https://<project-ref>.supabase.co.',
+    )
+    return ''
+  }
+}
+
 export const publicEnv = {
-  supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL ?? '',
+  supabaseUrl: supabaseOrigin(process.env.NEXT_PUBLIC_SUPABASE_URL),
   supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '',
   siteUrl: process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000',
 } as const
