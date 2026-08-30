@@ -1,8 +1,30 @@
 import type { NextConfig } from 'next'
 
-const supabaseHost = process.env.NEXT_PUBLIC_SUPABASE_URL
-  ? new URL(process.env.NEXT_PUBLIC_SUPABASE_URL).hostname
-  : undefined
+/**
+ * The media host, or nothing if the variable is unusable.
+ *
+ * `new URL()` throws on a malformed value, and thrown from here it takes the
+ * whole config with it: the build or the dev server dies with `Invalid URL`
+ * before any application code runs, over a variable that only ever contributes
+ * an image `hostname`. A bad value should cost the remote image pattern, not the
+ * entire archive, so it is caught and the pattern list is left empty.
+ */
+function supabaseHostname(): string | undefined {
+  const raw = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim()
+  if (!raw) return undefined
+
+  try {
+    return new URL(raw).hostname
+  } catch {
+    console.warn(
+      `NEXT_PUBLIC_SUPABASE_URL is not a valid URL ("${raw}"), so no remote image pattern was ` +
+        'configured for Supabase Storage.',
+    )
+    return undefined
+  }
+}
+
+const supabaseHost = supabaseHostname()
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
