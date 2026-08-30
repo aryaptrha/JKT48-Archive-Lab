@@ -139,13 +139,78 @@ Games are data-driven engines rather than hard-coded quiz pages (PRD §6):
 
 ---
 
-## 6. How to Extend the Archive
+## 6. Bulk Import (§14, §26)
+
+`/admin/import` is a faster route to the existing mutation services, **not a second
+write path into the database.** It is worth understanding as a layering example,
+because it is the one feature with an obvious temptation to bypass the stack.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ src/domain/bulk-import.ts                       (pure)       │
+│ text → candidate rows; loose header matching; ignored-column │
+│ reporting. Decides nothing about validity, touches no DB.    │
+└─────────────────────────────┬────────────────────────────────┘
+                              │
+                              ▼
+┌──────────────────────────────────────────────────────────────┐
+│ src/server/services/bulk-import.ts                           │
+│ plan → (dry run | commit). One implementation, one flag.     │
+└─────────────────────────────┬────────────────────────────────┘
+                              │  row by row
+                              ▼
+┌──────────────────────────────────────────────────────────────┐
+│ services/entity-admin.ts                                     │
+│ createEntity · updateEntity · createRelationship ·           │
+│ updateRelationship — validation, guardrails, audit           │
+└──────────────────────────────────────────────────────────────┘
+```
+
+Three decisions carry the design:
+
+1. **The parser is pure and decides nothing.** The rules for a valid record already
+   exist once, in `src/domain/validation.ts`, and are enforced once, in
+   `entity-admin`. An importer that re-implemented them would be a second, quietly
+   diverging definition of what the archive accepts.
+2. **Preview and commit are the same code path with a flag.** `previewBulkImport`
+   and `commitBulkImport` both call `runImport`; the only difference is whether an
+   `Actor` is passed. A dry run that diverged from the write would be worse than
+   offering no dry run, because an operator would trust it. This is also why
+   `checkEntityInput` and `checkEdgeCompatibility` are *named exports* of
+   `entity-admin` rather than inline code at the top of each mutation — the preview
+   calls exactly what the commit will.
+3. **Rows are written one at a time through the audited services**, never through
+   `createMany`. Those services own slug resolution, the relationship guardrails and
+   the `AuditEntry`, so an imported record is indistinguishable from a hand-curated
+   one and each row keeps its own history (§17).
+
+**Consequence — there is no batch transaction.** Composing independent audited
+services means there is nothing to roll back across. So the default is to refuse the
+entire commit unless every row validates, and partial application is an explicit
+operator opt-in that reports which lines were dropped. The batch also writes one
+`AuditAction.BULK_IMPORT` entry with the counts and a capped manifest, so a batch can
+be identified later without storing a second copy of the sheet in the log.
+
+**What it will not do**, and these are invariants rather than gaps: no delete or
+unpublish; no changing an existing record's type between specialized tables; no
+inventing a `Source`. And record sheets have no `team` / `generation` / `centerSong`
+column — such a header is *reported as ignored*, because accepting one would
+re-introduce the foreign key §10 forbids.
+
+---
+
+## 7. How to Extend the Archive
 
 ### Adding a New Entity Type:
 1. Add type to `EntityType` enum in `prisma/schema.prisma`.
 2. Add category and label mapping in `src/domain/entity-taxonomy.ts`.
 3. If type requires specialized attributes, add 1:1 table in `schema.prisma` and fields in `src/domain/attribute-fields.ts`.
 4. Run `npm run db:migrate`.
+
+> The bulk importer needs no change for a new type. `importColumnSpecs()` builds its
+> columns from `attributeFieldsFor(table)`, so the record editor and the import
+> template stay in step by construction — a field added in one appears in the other.
+> Only a *base* column change (`ENTITY_COLUMNS`) touches `src/domain/bulk-import.ts`.
 
 ### Adding a New Relationship Type:
 1. Add constant to `REL` in `src/domain/relationship-types.ts`.

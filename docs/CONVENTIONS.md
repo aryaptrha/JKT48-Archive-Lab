@@ -66,6 +66,16 @@ functions in `src/server/services/*` and `src/server/queries/*`, which already
 validate, authorize and audit. **Do not import `prisma` in a page, an action or a
 route handler.**
 
+Bulk import is the precedent worth knowing here, because it is where the temptation
+is strongest. `src/server/services/bulk-import.ts` writes five hundred rows **one at
+a time** through `createEntity` / `updateEntity` / `createRelationship` /
+`updateRelationship`, not through a `createMany`. Those services own slug resolution,
+the edge guardrails and the audit row; a bulk insert bypasses all three and produces
+records that are invisible in their own history panel. Slower is correct here. The
+same rule is why the dry run calls `checkEntityInput` and `checkEdgeCompatibility` —
+the exported checks the mutations themselves run — rather than its own copy of the
+rules.
+
 **9. No secret reaches the browser (§28, §35).** The Supabase service-role key is
 server-only. Secrets are not committed; `.env` is gitignored.
 
@@ -170,9 +180,9 @@ code. Every file gets a header docblock.
 
 ## 6. Forms and mutations
 
-Two shapes of admin mutation exist, and they report differently on purpose. The
-reasoning lives in `src/lib/form-state.ts`; the split is **display only** — both
-paths run identical server-side validation and authorization (§35).
+Three shapes of admin mutation exist, and they report differently on purpose. The
+reasoning lives in `src/lib/form-state.ts`; the split is **display only** — every
+path runs identical server-side validation and authorization (§35).
 
 **Short submits** — publish/unpublish, retire a term, save a one-line config row,
 resolve an issue, change a role. A plain action typed
@@ -187,6 +197,22 @@ be linked to a colleague.
 every typed value still in the inputs and each message under the field that caused
 it. "Please correct the highlighted fields" is useless if the fields are blank and
 the highlights are gone. Their success path never returns: it redirects.
+
+**Bulk import** — `/admin/import`, the one screen whose success path deliberately
+does *not* redirect, because **the report is the result.** `AdminFormState` does not
+fit it: an editor's error belongs under the input that caused it, an import's belongs
+to a row of the sheet, and there may be four hundred of them. So it uses
+`useActionState` with `ImportState` from `@/lib/import-state`, which carries a
+`BulkImportReport` instead of field errors, and whose `status` distinguishes the two
+outcomes a curator must never confuse: `previewed` means **nothing was written**,
+`committed` means it was. That type lives in `src/lib/import-state.ts` rather than
+beside the action for the ordinary reason — a `'use server'` module may export only
+async functions, so a plain type or constant there is a build error.
+
+If you touch that flow: preview and commit are **one action** separated by an `intent`
+field and nothing else, over **one service function** separated by whether an `Actor`
+was passed. Keep it that way. A dry run that does not run the commit's code is worse
+than no dry run, because the operator will trust it.
 
 Other conventions:
 
@@ -234,6 +260,29 @@ Behaviour that has surprised a caller before:
   Check `src/domain/difficulty.ts` first, then fall back to `humanizeEnum`.
 - `Paginated<T>` is `{items, total, page, pageSize, pageCount}`; `emptyPage<T>()`
   builds a blank one.
+- `rawAttributeValues()` is exported from **`services/entity-mapper.ts`**, not from
+  `queries/admin.ts` where it used to be a private `rawAttributes`. It returns the
+  *stored* values, not the display strings `toEntityAttributes` produces — an editor
+  that round-trips `"5 ft 4 in"` back into `heightCm` is a data-loss bug. Both the
+  record editor and bulk import's update planner depend on that.
+- `ImportFormat` is `'csv' | 'json'` — there is **no `'tsv'` member.** TSV is handled
+  under `csv` by delimiter sniffing; its label is `'CSV / TSV'`.
+- `RowOutcome` has five members, and `deferred` is not a failure. It means an edge
+  whose endpoint is a record being **created in the same batch**: on a preview that
+  id does not exist yet, so the row is reported as deferred rather than as a missing
+  endpoint. The commit's entity pass runs first and fills it in. Do not render it in
+  the error tone.
+- `ENTITY_COLUMNS` deliberately has no `team`, `generation` or `centerSong` column
+  (§10). Do not "fix" the ignored-columns report by adding one.
+- `normalizeKey()` strips *every* non-alphanumeric character and lowercases, and
+  `buildColumnIndex` applies it to each column's name, label **and** aliases. So
+  separators in an alias are harmless — but the index is **first writer wins**
+  (`if (!index.has(normalized))`), so an alias that normalizes onto a column declared
+  earlier in `ENTITY_COLUMNS` / `RELATIONSHIP_COLUMNS` is silently dropped rather than
+  reported. Check the order before adding one.
+- `importColumnSpecs()` emits an attribute whose bare name collides with a base column
+  as `attributes.<name>` — `organization.name` collides with `name`, the alias for the
+  canonical name. Read the `key` it returns; do not assume it is `field.name`.
 
 ---
 
