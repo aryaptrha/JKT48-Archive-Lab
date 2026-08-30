@@ -35,6 +35,7 @@ const SECTIONS: { href: string; label: string; exact?: boolean }[] = [
   { href: '/admin', label: 'Dashboard', exact: true },
   { href: '/admin/entities', label: 'Records' },
   { href: '/admin/relationships', label: 'Relationships' },
+  { href: '/admin/import', label: 'Bulk import' },
   { href: '/admin/sources', label: 'Sources' },
   { href: '/admin/data-health', label: 'Data health' },
   { href: '/admin/games', label: 'Games' },

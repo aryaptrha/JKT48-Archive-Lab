@@ -161,6 +161,40 @@ export async function findEntityRefsByIds(ids: readonly string[]): Promise<Entit
   })
 }
 
+/**
+ * Batch slug lookup, including unpublished rows.
+ *
+ * Bulk import resolves a whole sheet of `sourceRef` / `targetRef` cells in one
+ * query rather than one per row, and it has to see drafts: a curator commonly
+ * imports the members and the edges that connect them in the same sitting, and
+ * a new record starts unpublished.
+ */
+export async function findEntityRefsBySlugs(slugs: readonly string[]): Promise<EntityRefRow[]> {
+  if (slugs.length === 0) return []
+  return prisma.entity.findMany({
+    where: { slug: { in: [...new Set(slugs)] } },
+    select: entityRefSelect,
+  })
+}
+
+/**
+ * The full rows, specialized attributes included, for a set of slugs.
+ *
+ * The heavier sibling of `findEntityRefsBySlugs`, and only worth its weight for
+ * bulk *updates*: merging a partly-filled sheet over stored records needs every
+ * column those records already hold, and reading them one row at a time would be
+ * a query per line of the sheet.
+ */
+export async function findEntitiesBySlugs(
+  slugs: readonly string[],
+): Promise<EntityWithAttributes[]> {
+  if (slugs.length === 0) return []
+  return prisma.entity.findMany({
+    where: { slug: { in: [...new Set(slugs)] } },
+    include: entityAttributesInclude,
+  })
+}
+
 export async function countEntitiesByType(includeUnpublished = false) {
   const rows = await prisma.entity.groupBy({
     by: ['entityType'],

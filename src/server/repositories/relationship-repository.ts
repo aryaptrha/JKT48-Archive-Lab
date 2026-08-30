@@ -175,6 +175,52 @@ export async function findRelationshipById(id: string): Promise<EdgeRow | null> 
   return prisma.relationship.findUnique({ where: { id }, include: edgeInclude })
 }
 
+/**
+ * Every edge that starts at one of these records under one of these types.
+ *
+ * Used to match a batch of imported rows against the relationship identity
+ * `@@unique([sourceEntityId, relationshipTypeId, targetEntityId, validFrom])`
+ * without one round trip per row: a five-hundred-row sheet needs that answer
+ * twice, once to preview and once to commit. The mutable fields come along so a
+ * matched row can be merged over instead of overwriting what it omits.
+ */
+export async function findEdgesBySourceAndType(
+  sourceEntityIds: readonly string[],
+  relationshipTypeIds: readonly string[],
+): Promise<
+  {
+    id: string
+    sourceEntityId: string
+    relationshipTypeId: string
+    targetEntityId: string
+    validFrom: Date | null
+    validTo: Date | null
+    weight: number
+    notes: string | null
+    provenanceId: string | null
+  }[]
+> {
+  if (sourceEntityIds.length === 0 || relationshipTypeIds.length === 0) return []
+
+  return prisma.relationship.findMany({
+    where: {
+      sourceEntityId: { in: [...new Set(sourceEntityIds)] },
+      relationshipTypeId: { in: [...new Set(relationshipTypeIds)] },
+    },
+    select: {
+      id: true,
+      sourceEntityId: true,
+      relationshipTypeId: true,
+      targetEntityId: true,
+      validFrom: true,
+      validTo: true,
+      weight: true,
+      notes: true,
+      provenanceId: true,
+    },
+  })
+}
+
 export async function countRelationships(): Promise<number> {
   return prisma.relationship.count()
 }

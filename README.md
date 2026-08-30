@@ -143,6 +143,7 @@ npm run db:seed
 - `/admin/relationships` — Knowledge graph relationship browser
 - `/admin/relationships/new` — Link entities via typed predicates
 - `/admin/relationships/[id]` — Edit / close relationship validity
+- `/admin/import` — Bulk CSV/TSV/JSON import, dry-run preview then commit
 - `/admin/sources` — Data provenance citations
 - `/admin/data-health` — 14 automated consistency & game-readiness checks
 - `/admin/games` — Game definitions, difficulty & scoring rules
@@ -176,11 +177,11 @@ npm run db:seed
 - Generation Mastery tracking across 5 knowledge dimensions
 - Configurable mastery status bands (never hard-coded in code)
 - Complete Curator Admin CMS (Entities, Relationships, Sources, Health, Audit, Settings)
+- Bulk CSV/TSV/JSON import for records and relationships, with a dry-run preview
 - 14 Public REST API v1 endpoints
 
 ### Deferred to V1.1 (§26):
 - Daily Challenge (Seeded but inactive in V1)
 - Public achievement system & leaderboards
-- Bulk CSV/JSON import
 - Automated web crawlers & staging pipeline
 - Per-member mastery scoping

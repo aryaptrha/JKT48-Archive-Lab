@@ -329,9 +329,28 @@ is worse than a short one.
 
 ## 5. Deferred to V1.1 (§26) — do not build now
 
-Daily Challenge (seeded but inactive), achievements, leaderboards, bulk/CSV/JSON
-import, richer question generation, more relationship puzzles, advanced historical
-queries, improved Data Health.
+Daily Challenge (seeded but inactive), achievements, leaderboards, richer question
+generation, more relationship puzzles, advanced historical queries, improved Data
+Health.
+
+Bulk CSV/TSV/JSON import has since been built — `/admin/import`, on top of
+`src/domain/bulk-import.ts` (parsing, column aliasing) and
+`src/server/services/bulk-import.ts` (planning, dry run, commit). It routes every
+row through the same `entity-admin` services as the single-record editors rather
+than writing its own, which is why it is not the "staging pipeline" still listed
+above: there is no separate ingestion path to reconcile.
+
+What it deliberately does not do, if it is picked up again:
+
+- **Delete or unpublish.** An import creates and updates; removing records stays a
+  deliberate act in the record editor, where the cascade warning lives.
+- **Wrap the batch in one transaction.** It composes independent audited services,
+  so instead it refuses to write at all unless every row validates, and an operator
+  who wants the good rows opts in explicitly.
+- **Change a record's type.** A row naming an existing slug with a different type
+  fails rather than migrating it between specialized tables.
+- **Invent sources.** An unrecognised `provenance` cell fails its row rather than
+  importing the record uncited.
 
 ---
 
