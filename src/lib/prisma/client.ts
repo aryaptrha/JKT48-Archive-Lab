@@ -1,13 +1,13 @@
 import { PrismaPg } from '@prisma/adapter-pg'
 import { PrismaClient } from '@/generated/prisma/client'
-import { isProduction, requireDatabaseUrl } from '@/lib/env'
+import { databasePoolMax, isProduction, requireDatabaseUrl } from '@/lib/env'
 
 /**
  * Prisma client singleton (PRD §26, §31).
  *
  * Serverless constraints:
- *  - Each Vercel function instance keeps at most ONE pooled connection, because
- *    many instances may run concurrently against Supabase's PgBouncer.
+ *  - A function instance keeps only a small pool, because many instances may run
+ *    concurrently against Supabase's PgBouncer, which does the real pooling.
  *  - The app must never assume a long-lived Node process, so the client is
  *    cheap to construct and safe to re-create on cold start.
  *  - In development the instance is cached on `globalThis` so Fast Refresh does
@@ -19,8 +19,19 @@ import { isProduction, requireDatabaseUrl } from '@/lib/env'
 function createPrismaClient() {
   const adapter = new PrismaPg({
     connectionString: requireDatabaseUrl(),
-    // One connection per function instance; PgBouncer does the real pooling.
-    max: 1,
+    /*
+     * A few connections per instance, not one.
+     *
+     * Every read model in `server/queries` fans its independent queries out
+     * through `Promise.all` — the home page runs nine at once. With `max: 1` the
+     * pool handed them out one at a time, so those `Promise.all` calls were
+     * parallel in the source and strictly serial in practice, and the page took
+     * the sum of its queries rather than the slowest.
+     *
+     * Set `DATABASE_POOL_MAX=1` to restore the previous behaviour if PgBouncer's
+     * client limit ever becomes the binding constraint.
+     */
+    max: databasePoolMax(),
   })
 
   return new PrismaClient({

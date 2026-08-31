@@ -1,3 +1,4 @@
+import { Suspense } from 'react'
 import Link from 'next/link'
 import { Search, Shield, User } from 'lucide-react'
 
@@ -34,10 +35,59 @@ const SECTIONS: NavSection[] = [
   { href: '/games', label: 'Games' },
 ]
 
-export async function SiteHeader() {
+/**
+ * Reserved space for the account controls.
+ *
+ * The width is fixed so the masthead does not shift sideways when the real slot
+ * arrives — a rule and a wordmark that jump on every page load read as broken
+ * even when the cause is only a resolved promise. `5.25rem` is the width of the
+ * widest resting state, the "Sign in" button.
+ */
+const ACCOUNT_SLOT_WIDTH = 'min-w-[5.25rem]'
+
+/**
+ * The account state, resolved separately from the rest of the masthead.
+ *
+ * Knowing who is reading takes a round trip to Supabase Auth and a profile
+ * lookup, and until this was split out the entire document waited on both:
+ * nothing at all was sent to the browser until the archive knew whose name to
+ * put in one button in the corner. Suspended, the masthead, navigation and page
+ * frame flush first and this fills in behind them.
+ */
+async function AccountSlot() {
   const profile = await getCurrentProfile()
   const isAdmin = profile?.role === UserRole.ADMIN
 
+  return (
+    <div className={`flex items-center justify-end gap-1 ${ACCOUNT_SLOT_WIDTH}`}>
+      {isAdmin ? (
+        <Link
+          href="/admin"
+          className="inline-flex size-9 items-center justify-center rounded-sm text-ink-muted transition-colors hover:bg-ground-sunk hover:text-accent"
+          aria-label="Curator tools"
+          title="Curator tools"
+        >
+          <Shield aria-hidden className="size-4" />
+        </Link>
+      ) : null}
+
+      {profile ? (
+        <Button asChild variant="ghost" size="sm" className="gap-1.5">
+          <Link href="/me">
+            <User aria-hidden />
+            <span className="hidden sm:inline">{profile.displayName ?? 'Account'}</span>
+          </Link>
+        </Button>
+      ) : (
+        <Button asChild variant="outline" size="sm">
+          <Link href="/login">Sign in</Link>
+        </Button>
+      )}
+    </div>
+  )
+}
+
+export function SiteHeader() {
   return (
     <header className="sticky top-0 z-40 border-b border-rule bg-ground">
       <div className="mx-auto flex h-14 w-full max-w-[76rem] items-center gap-3 px-4 sm:px-6 lg:px-8">
@@ -69,31 +119,9 @@ export async function SiteHeader() {
 
           <ThemeToggle />
 
-          {isAdmin ? (
-            <Link
-              href="/admin"
-              className="inline-flex size-9 items-center justify-center rounded-sm text-ink-muted transition-colors hover:bg-ground-sunk hover:text-accent"
-              aria-label="Curator tools"
-              title="Curator tools"
-            >
-              <Shield aria-hidden className="size-4" />
-            </Link>
-          ) : null}
-
-          {profile ? (
-            <Button asChild variant="ghost" size="sm" className="gap-1.5">
-              <Link href="/me">
-                <User aria-hidden />
-                <span className="hidden sm:inline">
-                  {profile.displayName ?? 'Account'}
-                </span>
-              </Link>
-            </Button>
-          ) : (
-            <Button asChild variant="outline" size="sm">
-              <Link href="/login">Sign in</Link>
-            </Button>
-          )}
+          <Suspense fallback={<div className={ACCOUNT_SLOT_WIDTH} aria-hidden />}>
+            <AccountSlot />
+          </Suspense>
         </div>
       </div>
 

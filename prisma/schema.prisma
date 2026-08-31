@@ -141,6 +141,11 @@ model Entity {
   @@index([category])
   @@index([canonicalName])
   @@index([prominence])
+  // Every public list filters `isPublished` and then orders by one of these two.
+  // Without the leading column the planner filters after sorting, which on a
+  // browse page means reading the whole collection to return twenty-four rows.
+  @@index([isPublished, prominence])
+  @@index([isPublished, updatedAt])
   @@map("entities")
 }
 
@@ -220,6 +225,10 @@ model Relationship {
   @@index([targetEntityId, relationshipTypeId])
   @@index([relationshipTypeId])
   @@index([validFrom, validTo])
+  // The "recent changes" read asks for the newest closed edges: `validTo` not null
+  // and on or before a date, ordered by `validTo` desc. A composite led by
+  // `validFrom` cannot serve that ordering, so it needs `validTo` on its own.
+  @@index([validTo])
   @@map("relationships")
 }
 

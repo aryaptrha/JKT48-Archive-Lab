@@ -279,9 +279,17 @@
     animation: rise var(--duration-slow) var(--ease-editorial) both;
   }
 
-  /* Staggered reveal for a list, set per item via a CSS variable. */
+  /*
+   * Staggered reveal for a list, set per item via a CSS variable.
+   *
+   * Clamped to the first eight items. The stagger reads as a sweep across the
+   * top of a grid, and past that it is no longer legible as one — it is just a
+   * card sitting at `opacity: 0`. On a twenty-four card browse page the last
+   * item used to wait 920ms before it began to fade in; now nothing waits
+   * longer than 320ms.
+   */
   .stagger {
-    animation-delay: calc(var(--index, 0) * 40ms);
+    animation-delay: calc(min(var(--index, 0), 7) * 40ms);
   }
 
   /*

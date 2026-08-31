@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation'
 
 import { requireAdmin } from '@/lib/auth/session'
 import { actorFromProfile } from '@/server/services/audit'
+import { revalidateArchiveGraph } from '@/server/cache/tags'
 import { removeSource, saveSource } from '@/server/services/admin-config'
 
 import type { SourceType } from '@/generated/prisma/client'
@@ -44,6 +45,7 @@ export async function saveSourceAction(formData: FormData): Promise<void> {
     redirect(withQuery('/admin/sources', 'error', result.message))
   }
 
+  revalidateArchiveGraph()
   revalidatePath('/admin/sources')
   revalidatePath('/admin/entities')
   revalidatePath('/admin/relationships')
@@ -70,6 +72,7 @@ export async function deleteSourceAction(formData: FormData): Promise<void> {
     redirect(withQuery('/admin/sources', 'error', result.message))
   }
 
+  revalidateArchiveGraph()
   revalidatePath('/admin/sources')
   revalidatePath('/admin/entities')
   revalidatePath('/admin/relationships')

@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation'
 
 import { requireAdmin } from '@/lib/auth/session'
 import { actorFromProfile } from '@/server/services/audit'
+import { revalidateArchiveGames } from '@/server/cache/tags'
 import { saveGameDefinition, setGameDefinitionActive } from '@/server/services/admin-config'
 
 import type { Difficulty, EntityType, GameType } from '@/generated/prisma/client'
@@ -69,6 +70,7 @@ export async function saveGameDefinitionAction(formData: FormData): Promise<void
     redirect(withQuery('/admin/games', 'error', result.message))
   }
 
+  revalidateArchiveGames()
   revalidatePath('/admin/games')
   revalidatePath('/games')
 
@@ -92,6 +94,7 @@ export async function toggleGameActiveAction(formData: FormData): Promise<void> 
     redirect(withQuery('/admin/games', 'error', result.message))
   }
 
+  revalidateArchiveGames()
   revalidatePath('/admin/games')
   revalidatePath('/games')
 

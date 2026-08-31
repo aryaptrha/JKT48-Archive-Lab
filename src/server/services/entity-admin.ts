@@ -5,10 +5,12 @@ import {
   entityInputSchema,
   relationshipInputSchema,
   toFieldErrors,
+  type EntityInput,
   type FieldErrors,
 } from '@/domain/validation'
 import type { Prisma } from '@/generated/prisma/client'
 import { AuditAction } from '@/generated/prisma/enums'
+import type { EntityType } from '@/generated/prisma/enums'
 import { toISODate } from '@/lib/date'
 import { slugify } from '@/lib/utils'
 import type { z } from 'zod'
@@ -146,7 +148,7 @@ async function resolveSlug(
  * The parsed attribute row, discriminated by table so each nested write below is
  * type-checked against the model it targets.
  */
-type AttributeData = {
+export type AttributeData = {
   [K in AttributeTable]: { table: K; data: z.output<(typeof ATTRIBUTE_SCHEMAS)[K]> }
 }[AttributeTable]
 
@@ -195,6 +197,32 @@ function parseAttributes(
   // The schema was selected by `table`, so its output is that table's row. TS
   // cannot correlate the two through the index, hence the single assertion.
   return { ok: true, value: { table, data: parsed.data } as AttributeData }
+}
+
+/**
+ * Every check `createEntity` and `updateEntity` run before either of them writes:
+ * the base schema, then the attribute schema for the type's specialized table.
+ *
+ * Both of them call this, and so does bulk import's dry run — which is the whole
+ * reason it is a named export rather than three lines repeated at the top of each
+ * mutation. A preview that applied even slightly different rules than the commit
+ * would be worse than offering no preview at all, because an operator would trust
+ * it.
+ */
+export function checkEntityInput(
+  input: unknown,
+): AdminResult<{ values: EntityInput; attributes: AttributeData | null }> {
+  const parsed = entityInputSchema.safeParse(input)
+  if (!parsed.success) return failFromZod(parsed.error)
+  const values = parsed.data
+
+  const table = attributeTableFor(values.entityType)
+  if (!table) return { ok: true, data: { values, attributes: null } }
+
+  const result = parseAttributes(table, values.attributes, values.canonicalName)
+  if (!result.ok) return failFromZod(result.error, 'attributes')
+
+  return { ok: true, data: { values, attributes: result.value } }
 }
 
 /** Nested create for a brand-new entity. */
@@ -364,20 +392,12 @@ export async function createEntity(
   input: unknown,
   actor: Actor,
 ): Promise<AdminResult<SavedEntity>> {
-  const parsed = entityInputSchema.safeParse(input)
-  if (!parsed.success) return failFromZod(parsed.error)
-  const values = parsed.data
+  const checked = checkEntityInput(input)
+  if (!checked.ok) return checked
+  const { values, attributes } = checked.data
 
   const slug = await resolveSlug(values.slug, values.canonicalName)
   if (!slug.ok) return slug
-
-  const table = attributeTableFor(values.entityType)
-  let attributes: AttributeData | null = null
-  if (table) {
-    const result = parseAttributes(table, values.attributes, values.canonicalName)
-    if (!result.ok) return failFromZod(result.error, 'attributes')
-    attributes = result.value
-  }
 
   const data: Prisma.EntityCreateInput = {
     entityType: values.entityType,
@@ -428,20 +448,14 @@ export async function updateEntity(
   const existing = await findEntityById(id, true)
   if (!existing) return fail('That record no longer exists.')
 
-  const parsed = entityInputSchema.safeParse(input)
-  if (!parsed.success) return failFromZod(parsed.error)
-  const values = parsed.data
+  const checked = checkEntityInput(input)
+  if (!checked.ok) return checked
+  const { values, attributes } = checked.data
 
   const slug = await resolveSlug(values.slug, values.canonicalName, id)
   if (!slug.ok) return slug
 
   const table = attributeTableFor(values.entityType)
-  let attributes: AttributeData | null = null
-  if (table) {
-    const result = parseAttributes(table, values.attributes, values.canonicalName)
-    if (!result.ok) return failFromZod(result.error, 'attributes')
-    attributes = result.value
-  }
 
   const data: Prisma.EntityUpdateInput = {
     entityType: values.entityType,
@@ -571,6 +585,61 @@ export async function deleteEntity(
  * Member" by picking the wrong autocomplete row. An empty list means the type
  * accepts anything, which is how a new type behaves until someone constrains it.
  */
+/**
+ * The relationship vocabulary's own constraints, checked against an edge.
+ *
+ * Split out from `validateEdge` so it can be applied to an edge whose endpoints
+ * were loaded somewhere else — bulk import resolves a whole sheet of endpoints in
+ * two queries and then needs these same answers per row. The rules live here
+ * once: a second copy in the importer is how a type's allowed endpoints end up
+ * being enforced on one path and not the other.
+ */
+export type EdgeTypeShape = {
+  name: string
+  isActive: boolean
+  isTemporal: boolean
+  allowedSourceTypes: readonly EntityType[]
+  allowedTargetTypes: readonly EntityType[]
+}
+
+export function checkEdgeCompatibility(input: {
+  type: EdgeTypeShape
+  sourceEntityType: EntityType
+  targetEntityType: EntityType
+  validFrom: Date | null
+  validTo: Date | null
+  requireActiveType: boolean
+}): AdminResult<{ typeName: string }> {
+  const { type } = input
+
+  if (input.requireActiveType && !type.isActive) {
+    return fail(`${type.name} is retired and cannot be used for new relationships.`, {
+      relationshipTypeId: ['This type is no longer active'],
+    })
+  }
+
+  if (type.allowedSourceTypes.length > 0 && !type.allowedSourceTypes.includes(input.sourceEntityType)) {
+    return fail(`${type.name} cannot start from a ${input.sourceEntityType} record.`, {
+      sourceEntityId: [`Allowed: ${type.allowedSourceTypes.join(', ')}`],
+    })
+  }
+  if (type.allowedTargetTypes.length > 0 && !type.allowedTargetTypes.includes(input.targetEntityType)) {
+    return fail(`${type.name} cannot point at a ${input.targetEntityType} record.`, {
+      targetEntityId: [`Allowed: ${type.allowedTargetTypes.join(', ')}`],
+    })
+  }
+
+  // A non-temporal type has no validity window; accepting dates for one would
+  // put facts in the database that no query reads and Time Machine ignores.
+  if (!type.isTemporal && (input.validFrom || input.validTo)) {
+    return fail(`${type.name} is not a dated relationship.`, {
+      validFrom: ['This relationship type does not carry dates'],
+    })
+  }
+
+  return { ok: true, data: { typeName: type.name } }
+}
+
 async function validateEdge(
   values: { sourceEntityId: string; relationshipTypeId: string; targetEntityId: string; validFrom: Date | null; validTo: Date | null },
   requireActiveType: boolean,
@@ -584,34 +653,17 @@ async function validateEdge(
   if (!type) {
     return fail('Choose a relationship type.', { relationshipTypeId: ['Unknown relationship type'] })
   }
-  if (requireActiveType && !type.isActive) {
-    return fail(`${type.name} is retired and cannot be used for new relationships.`, {
-      relationshipTypeId: ['This type is no longer active'],
-    })
-  }
   if (!source) return fail('The source record no longer exists.', { sourceEntityId: ['Not found'] })
   if (!target) return fail('The target record no longer exists.', { targetEntityId: ['Not found'] })
 
-  if (type.allowedSourceTypes.length > 0 && !type.allowedSourceTypes.includes(source.entityType)) {
-    return fail(`${type.name} cannot start from a ${source.entityType} record.`, {
-      sourceEntityId: [`Allowed: ${type.allowedSourceTypes.join(', ')}`],
-    })
-  }
-  if (type.allowedTargetTypes.length > 0 && !type.allowedTargetTypes.includes(target.entityType)) {
-    return fail(`${type.name} cannot point at a ${target.entityType} record.`, {
-      targetEntityId: [`Allowed: ${type.allowedTargetTypes.join(', ')}`],
-    })
-  }
-
-  // A non-temporal type has no validity window; accepting dates for one would
-  // put facts in the database that no query reads and Time Machine ignores.
-  if (!type.isTemporal && (values.validFrom || values.validTo)) {
-    return fail(`${type.name} is not a dated relationship.`, {
-      validFrom: ['This relationship type does not carry dates'],
-    })
-  }
-
-  return { ok: true, data: { typeName: type.name } }
+  return checkEdgeCompatibility({
+    type,
+    sourceEntityType: source.entityType,
+    targetEntityType: target.entityType,
+    validFrom: values.validFrom,
+    validTo: values.validTo,
+    requireActiveType,
+  })
 }
 
 export type SavedRelationship = { id: string; description: string }

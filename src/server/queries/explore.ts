@@ -1,3 +1,5 @@
+import { unstable_cache } from 'next/cache'
+
 import {
   EXPLORE_COLLECTIONS,
   entityTypeLabel,
@@ -24,6 +26,7 @@ import {
 } from '../repositories/entity-repository'
 import { findEdgesForEntities } from '../repositories/relationship-repository'
 import { toEntityRef } from '../services/entity-mapper'
+import { ARCHIVE_CACHE_SECONDS, ARCHIVE_TAGS } from '../cache/tags'
 
 /**
  * Read models for the explore section (PRD §20 `/explore`, §4.1).
@@ -36,6 +39,17 @@ import { toEntityRef } from '../services/entity-mapper'
  * public, which is enforced the only way that holds: `includeUnpublished` is
  * never passed, so the repository's default filter applies. An admin preview is a
  * different function in `queries/admin.ts`, not a flag threaded through here.
+ *
+ * Because every read here is public and identical for every visitor, the view
+ * models are cached across requests and invalidated by tag when a curator edits
+ * (see `server/cache/tags.ts`). Two constraints come with that, and both are the
+ * reason the cached functions are the ones they are:
+ *
+ * - `unstable_cache` round-trips its result through serialization, so a cached
+ *   function may only return JSON. `ExploreCard` and `CollectionMeta` qualify —
+ *   they carry no `Date`, which is why datelines are pre-formatted strings.
+ * - Nothing inside a cache scope may read `cookies()`. Nothing here does; the
+ *   whole file is anonymous by construction.
  */
 
 export type ExploreCard = EntityRef & {
@@ -67,23 +81,27 @@ export type ExploreIndex = {
  * because a collection is a set of entity types and the mapping is in the domain
  * layer, not in SQL.
  */
-export async function getExploreIndex(): Promise<ExploreIndex> {
-  const counts = await countEntitiesByType()
+export const getExploreIndex = unstable_cache(
+  async (): Promise<ExploreIndex> => {
+    const counts = await countEntitiesByType()
 
-  const collections = EXPLORE_COLLECTIONS.map((collection) => ({
-    slug: collection.slug,
-    label: collection.label,
-    singular: collection.singular,
-    description: collection.description,
-    catalogPrefix: collection.catalogPrefix,
-    count: collection.entityTypes.reduce((sum, type) => sum + (counts.get(type) ?? 0), 0),
-  }))
+    const collections = EXPLORE_COLLECTIONS.map((collection) => ({
+      slug: collection.slug,
+      label: collection.label,
+      singular: collection.singular,
+      description: collection.description,
+      catalogPrefix: collection.catalogPrefix,
+      count: collection.entityTypes.reduce((sum, type) => sum + (counts.get(type) ?? 0), 0),
+    }))
 
-  return {
-    collections,
-    total: collections.reduce((sum, collection) => sum + collection.count, 0),
-  }
-}
+    return {
+      collections,
+      total: collections.reduce((sum, collection) => sum + collection.count, 0),
+    }
+  },
+  ['explore:index'],
+  { tags: [ARCHIVE_TAGS.graph], revalidate: ARCHIVE_CACHE_SECONDS },
+)
 
 /**
  * The subtitle under a card, drawn from the specialized row.
@@ -191,8 +209,12 @@ export type CollectionPage = {
  * People browse members by prominence and releases by date; sorting either the
  * other way produces a correct list nobody wants. Chronological puts undated
  * records last rather than first, which is the repository's doing.
+ *
+ * Exported because the browse page renders its sort control before the results
+ * exist — the control needs the same default the query will apply, and deriving
+ * it twice from two copies of this switch is how the two would drift apart.
  */
-function defaultSort(collection: ExploreCollection): CollectionSort {
+export function collectionDefaultSort(collection: ExploreCollection): CollectionSort {
   switch (collection.slug) {
     case 'members':
     case 'teams':
@@ -209,15 +231,21 @@ function defaultSort(collection: ExploreCollection): CollectionSort {
   }
 }
 
-/** One browse page. Returns null for an unknown slug so the route can 404. */
-export async function getCollectionPage(
+type CollectionPageOptions = {
+  page?: number
+  pageSize?: number
+  search?: string
+  sort?: CollectionSort
+}
+
+async function buildCollectionPage(
   slug: string,
-  options: { page?: number; pageSize?: number; search?: string; sort?: CollectionSort } = {},
+  options: CollectionPageOptions,
 ): Promise<CollectionPage | null> {
   const collection = getCollection(slug)
   if (!collection) return null
 
-  const sort = options.sort ?? defaultSort(collection)
+  const sort = options.sort ?? collectionDefaultSort(collection)
   const search = options.search?.trim() || null
 
   const { rows, total, page, pageSize } = await listEntities({
@@ -258,6 +286,28 @@ export async function getCollectionPage(
   }
 }
 
+const getCachedCollectionPage = unstable_cache(buildCollectionPage, ['explore:collection'], {
+  tags: [ARCHIVE_TAGS.graph],
+  revalidate: ARCHIVE_CACHE_SECONDS,
+})
+
+/**
+ * One browse page. Returns null for an unknown slug so the route can 404.
+ *
+ * Browsing is cached; searching is not. A browse page is one of a bounded set —
+ * collection × sort × page number — and every visitor asks for the same ones. A
+ * search term is arbitrary text, so caching those would let anyone mint unbounded
+ * cache entries by typing, and the hit rate on a term nobody else searched is
+ * zero anyway.
+ */
+export async function getCollectionPage(
+  slug: string,
+  options: CollectionPageOptions = {},
+): Promise<CollectionPage | null> {
+  if (options.search?.trim()) return buildCollectionPage(slug, options)
+  return getCachedCollectionPage(slug, options)
+}
+
 /**
  * A short, ordered strip of records for a rail or a related-records block.
  *
@@ -265,18 +315,21 @@ export async function getCollectionPage(
  * collection". Prominence ordering is what keeps a rail from opening with the
  * most obscure record in the archive.
  */
-export async function getCollectionHighlights(
-  slug: string,
-  limit = 6,
-): Promise<ExploreCard[]> {
-  const collection = getCollection(slug)
-  if (!collection) return []
+export const getCollectionHighlights = unstable_cache(
+  async (slug: string, limit = 6): Promise<ExploreCard[]> => {
+    const collection = getCollection(slug)
+    if (!collection) return []
 
-  const { rows } = await listEntities({
-    entityTypes: collection.entityTypes,
-    pageSize: limit,
-    orderBy: 'prominence',
-  })
+    const { rows } = await listEntities({
+      entityTypes: collection.entityTypes,
+      pageSize: limit,
+      orderBy: 'prominence',
+      // No total is rendered above a rail, so there is nothing to count for.
+      withTotal: false,
+    })
 
-  return toCards(rows)
-}
+    return toCards(rows)
+  },
+  ['explore:highlights'],
+  { tags: [ARCHIVE_TAGS.graph], revalidate: ARCHIVE_CACHE_SECONDS },
+)

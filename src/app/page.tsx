@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { Suspense } from 'react'
 import { ArrowRight } from 'lucide-react'
 
 import { EmptyState } from '@/components/archive/empty-state'
@@ -9,7 +10,7 @@ import { Stat, StatRow } from '@/components/archive/stat'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Panel, PanelBody, PanelHeader, PanelTitle } from '@/components/ui/panel'
-import { getHomePage } from '@/server/queries/home'
+import { getHomePage, getTodayPanel } from '@/server/queries/home'
 
 /**
  * `/` — the archive's front page (PRD §20).
@@ -22,45 +23,60 @@ import { getHomePage } from '@/server/queries/home'
  *
  * Every figure here is a read, not a claim (PRD §28) — which means an empty
  * archive renders an honest, small page rather than a broken one.
+ *
+ * The masthead is static copy, so it is not made to wait for the graph: the
+ * headline, lead and calls to action render synchronously and everything counted
+ * streams in behind a `<Suspense>` boundary. The whole read still happens as one
+ * `Promise.all` inside `HomeBody`, so nothing here trades a fast frame for a
+ * waterfall.
  */
 export const revalidate = 300
 
-export default async function HomePage() {
+/**
+ * The era named in the masthead eyebrow.
+ *
+ * The one line above the fold that is a read rather than copy. Its fallback is
+ * the same text an archive with no era covering today already shows, so the
+ * eyebrow reads correctly either way.
+ */
+async function EraEyebrow() {
+  const today = await getTodayPanel()
+  return <>Knowledge graph · {today.eraName ?? 'JKT48 history'}</>
+}
+
+/** The shape of what is loading: a row of figures, then two panels. */
+function HomeBodyFallback() {
+  return (
+    <div className="space-y-14" aria-busy="true" aria-live="polite">
+      <span className="sr-only">Loading the archive</span>
+
+      <div className="grid grid-cols-2 gap-6 border-t border-rule pt-6 sm:grid-cols-4">
+        {[0, 1, 2, 3].map((index) => (
+          <div key={index} className="space-y-2">
+            <div className="h-2.5 w-16 animate-pulse rounded-xs bg-ground-sunk" />
+            <div className="h-7 w-12 animate-pulse rounded-xs bg-ground-sunk" />
+          </div>
+        ))}
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-[1.05fr_1fr]">
+        {[0, 1].map((index) => (
+          <div
+            key={index}
+            className="h-64 animate-pulse rounded-sm border border-rule bg-ground-sunk"
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+async function HomeBody() {
   const home = await getHomePage()
   const isEmpty = home.scale.entities === 0
 
   return (
-    <PageShell className="space-y-14">
-      {/* ------------------------------------------------------------- masthead */}
-      <section className="space-y-6 pt-2">
-        <p className="eyebrow animate-rise">
-          Knowledge graph · {home.today.eraName ?? 'JKT48 history'}
-        </p>
-
-        <h1 className="animate-rise max-w-3xl text-4xl font-semibold leading-[1.08] sm:text-5xl lg:text-6xl">
-          Everything JKT48 has been, held as one connected record.
-        </h1>
-
-        <p className="animate-rise max-w-2xl text-base leading-relaxed text-ink-muted">
-          Members, generations, teams, songs, albums and events — stored as
-          relationships with the dates they were true, so the archive can answer
-          not just <em>who</em> but <em>when</em>. Then it asks you to reconstruct
-          it from memory.
-        </p>
-
-        <div className="animate-rise flex flex-wrap items-center gap-2.5">
-          <Button asChild variant="accent" size="lg">
-            <Link href="/explore">
-              Browse the archive
-              <ArrowRight aria-hidden />
-            </Link>
-          </Button>
-          <Button asChild variant="outline" size="lg">
-            <Link href="/history/time-machine">Open the Time Machine</Link>
-          </Button>
-        </div>
-      </section>
-
+    <>
       {/* ---------------------------------------------------------------- scale */}
       <Section>
         <div className="border-t border-rule pt-6">
@@ -291,6 +307,48 @@ export default async function HomePage() {
           </div>
         </Section>
       ) : null}
+    </>
+  )
+}
+
+export default function HomePage() {
+  return (
+    <PageShell className="space-y-14">
+      {/* ------------------------------------------------------------- masthead */}
+      <section className="space-y-6 pt-2">
+        <p className="eyebrow animate-rise">
+          <Suspense fallback="Knowledge graph · JKT48 history">
+            <EraEyebrow />
+          </Suspense>
+        </p>
+
+        <h1 className="animate-rise max-w-3xl text-4xl font-semibold leading-[1.08] sm:text-5xl lg:text-6xl">
+          Everything JKT48 has been, held as one connected record.
+        </h1>
+
+        <p className="animate-rise max-w-2xl text-base leading-relaxed text-ink-muted">
+          Members, generations, teams, songs, albums and events — stored as
+          relationships with the dates they were true, so the archive can answer
+          not just <em>who</em> but <em>when</em>. Then it asks you to reconstruct
+          it from memory.
+        </p>
+
+        <div className="animate-rise flex flex-wrap items-center gap-2.5">
+          <Button asChild variant="accent" size="lg">
+            <Link href="/explore">
+              Browse the archive
+              <ArrowRight aria-hidden />
+            </Link>
+          </Button>
+          <Button asChild variant="outline" size="lg">
+            <Link href="/history/time-machine">Open the Time Machine</Link>
+          </Button>
+        </div>
+      </section>
+
+      <Suspense fallback={<HomeBodyFallback />}>
+        <HomeBody />
+      </Suspense>
     </PageShell>
   )
 }

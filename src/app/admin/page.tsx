@@ -47,6 +47,9 @@ export default async function AdminDashboardPage() {
         lead="The state of the archive as data, not as a score. Every figure here links to the screen where it can be changed."
         action={
           <>
+            <Button asChild variant="ghost" size="sm">
+              <Link href="/admin/import">Bulk import</Link>
+            </Button>
             <Button asChild variant="outline" size="sm">
               <Link href="/admin/entities/new">New record</Link>
             </Button>

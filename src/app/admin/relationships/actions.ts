@@ -6,6 +6,7 @@ import { redirect } from 'next/navigation'
 import { requireAdmin } from '@/lib/auth/session'
 import { errorState } from '@/lib/form-state'
 import { actorFromProfile } from '@/server/services/audit'
+import { revalidateArchiveGraph } from '@/server/cache/tags'
 import {
   closeRelationship,
   createRelationship,
@@ -29,6 +30,10 @@ function withQuery(path: string, key: 'notice' | 'error', value: string): string
 }
 
 function revalidateRelationshipPaths(sourceEntityId?: string, targetEntityId?: string) {
+  // An edge is read from both of its endpoints, from the timeline, and from the
+  // home page's counts and latest-changes panel. Naming those paths one by one
+  // would mean maintaining a second copy of the graph's shape; the tag does not.
+  revalidateArchiveGraph()
   revalidatePath('/admin/relationships')
   revalidatePath('/admin/entities')
   if (sourceEntityId) {

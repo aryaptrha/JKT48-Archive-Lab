@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation'
 
 import { requireAdmin } from '@/lib/auth/session'
 import { actorFromProfile } from '@/server/services/audit'
+import { revalidateArchiveGraph } from '@/server/cache/tags'
 import { removeEra, saveEra } from '@/server/services/admin-config'
 
 /**
@@ -44,6 +45,7 @@ export async function saveEraAction(formData: FormData): Promise<void> {
     redirect(withQuery('/admin/settings/eras', 'error', result.message))
   }
 
+  revalidateArchiveGraph()
   revalidatePath('/admin/settings/eras')
   revalidatePath('/history/timeline')
   revalidatePath('/history/time-machine')
@@ -67,6 +69,7 @@ export async function deleteEraAction(formData: FormData): Promise<void> {
     redirect(withQuery('/admin/settings/eras', 'error', result.message))
   }
 
+  revalidateArchiveGraph()
   revalidatePath('/admin/settings/eras')
   revalidatePath('/history/timeline')
   revalidatePath('/history/time-machine')

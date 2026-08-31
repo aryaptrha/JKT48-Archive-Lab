@@ -32,7 +32,7 @@ import { listSources } from '../repositories/source-repository'
 import { getAuditLog, getRecordHistory, type AuditEntryView } from '../services/audit'
 import { getConfigSummary, type ConfigSummary } from '../services/admin-config'
 import { getHealthReport, type HealthReport } from '../services/data-health'
-import { toEntityRef } from '../services/entity-mapper'
+import { rawAttributeValues, toEntityRef } from '../services/entity-mapper'
 
 /**
  * Read models for the CMS (PRD §19, §20 `/admin`).
@@ -268,41 +268,6 @@ export type EntityEditorPage = {
   publicHref: string | null
 }
 
-/**
- * The specialized row as plain values.
- *
- * The form needs the stored values, not the display strings `toEntityAttributes`
- * produces — an editor that round-trips "5 ft 4 in" back into `heightCm` is a data
- * loss bug waiting to happen. Primary keys are stripped because the attribute
- * schemas do not accept them and the entity id already identifies the row.
- */
-function rawAttributes(row: EntityWithAttributes): Record<string, unknown> {
-  const specialized =
-    row.member ??
-    row.generation ??
-    row.team ??
-    row.song ??
-    row.album ??
-    row.event ??
-    row.concert ??
-    row.setlist ??
-    row.mediaItem ??
-    row.organization
-
-  if (!specialized) return {}
-
-  const values: Record<string, unknown> = { ...specialized }
-  delete values.entityId
-
-  // Dates reach the form as `YYYY-MM-DD` so a date input can render them; the
-  // validation layer parses them back to UTC-midnight on the way in.
-  for (const [key, value] of Object.entries(values)) {
-    if (value instanceof Date) values[key] = toISODate(value) ?? ''
-  }
-
-  return values
-}
-
 function blankDefaults(entityType: EntityType): EntityFormDefaults {
   return {
     id: null,
@@ -388,7 +353,7 @@ export async function getEntityEditorPage(
       isPublished: entity.isPublished,
       provenanceId: entity.provenanceId ?? '',
       notes: entity.notes ?? '',
-      attributes: rawAttributes(entity),
+      attributes: rawAttributeValues(entity),
     },
     edges: edges.rows.map(toAdminEdgeRow),
     edgeCount,

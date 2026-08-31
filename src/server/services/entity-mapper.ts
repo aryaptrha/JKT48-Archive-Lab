@@ -10,7 +10,7 @@ import {
 } from '@/domain/labels'
 import { RELATIONSHIP_SECTIONS } from '@/domain/relationship-types'
 import type { EntityCategory, EntityType, Source } from '@/generated/prisma/client'
-import { formatDate } from '@/lib/date'
+import { formatDate, toISODate } from '@/lib/date'
 import type {
   EdgeSection,
   EntityAttribute,
@@ -142,6 +142,48 @@ function identity(
 
 function compact(items: (EntityAttribute | null)[]): EntityAttribute[] {
   return items.filter((item): item is EntityAttribute => item !== null)
+}
+
+/**
+ * The specialized row as raw, writable values — keyed exactly as the matching
+ * attribute schema expects, with `entityId` dropped and dates as `YYYY-MM-DD`.
+ *
+ * This is the inverse of `toEntityAttributes`: that one produces labelled prose
+ * for a reader, this one produces the values an editor re-submits. An editor that
+ * round-trips "5 ft 4 in" back into `heightCm` is a data-loss bug waiting to
+ * happen, so the two directions stay separate. Primary keys are stripped because
+ * the attribute schemas do not accept them and the entity id already identifies
+ * the row.
+ *
+ * Both the record editor's defaults and bulk import's update-merge read through
+ * here, and they must agree — an importer with its own idea of how to read a
+ * specialized row is an importer that silently blanks columns the other preserves.
+ */
+export function rawAttributeValues(row: EntityWithAttributes): Record<string, unknown> {
+  const specialized =
+    row.member ??
+    row.generation ??
+    row.team ??
+    row.song ??
+    row.album ??
+    row.event ??
+    row.concert ??
+    row.setlist ??
+    row.mediaItem ??
+    row.organization
+
+  if (!specialized) return {}
+
+  const values: Record<string, unknown> = { ...specialized }
+  delete values.entityId
+
+  // Dates reach the form as `YYYY-MM-DD` so a date input can render them; the
+  // validation layer parses them back to UTC-midnight on the way in.
+  for (const [key, value] of Object.entries(values)) {
+    if (value instanceof Date) values[key] = toISODate(value) ?? ''
+  }
+
+  return values
 }
 
 /**
